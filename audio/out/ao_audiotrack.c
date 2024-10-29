@@ -30,6 +30,9 @@
 #include "osdep/timer.h"
 #include "misc/jni.h"
 
+static pthread_mutex_t jni_static_lock = PTHREAD_MUTEX_INITIALIZER;
+static int jni_static_use_count = 0;
+
 struct priv {
     jobject audiotrack;
     jint samplerate;
@@ -518,35 +521,53 @@ static int AudioTrack_write(struct ao *ao, int len)
     return ret;
 }
 
+static void reset_jni_fields(JNIEnv *env, struct mp_log *log)
+{
+    mp_jni_reset_jfields(env, &AudioTrack, AudioTrack.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioTimestamp, AudioTimestamp.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioManager, AudioManager.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioFormat, AudioFormat.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioFormatBuilder, AudioFormatBuilder.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioAttributes, AudioAttributes.mapping, 1, log);
+    mp_jni_reset_jfields(env, &AudioAttributesBuilder, AudioAttributesBuilder.mapping, 1, log);
+    mp_jni_reset_jfields(env, &ByteBuffer, ByteBuffer.mapping, 1, log);
+}
+
 static void uninit_jni(struct ao *ao)
 {
-    JNIEnv *env = MP_JNI_GET_ENV(ao);
-    mp_jni_reset_jfields(env, &AudioTrack, AudioTrack.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioTimestamp, AudioTimestamp.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioManager, AudioManager.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioFormat, AudioFormat.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioFormatBuilder, AudioFormatBuilder.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioAttributes, AudioAttributes.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &AudioAttributesBuilder, AudioAttributesBuilder.mapping, 1, ao->log);
-    mp_jni_reset_jfields(env, &ByteBuffer, ByteBuffer.mapping, 1, ao->log);
+    pthread_mutex_lock(&jni_static_lock);
+    jni_static_use_count--;
+    if (jni_static_use_count == 0) {
+        JNIEnv *env = MP_JNI_GET_ENV(ao);
+        reset_jni_fields(env, ao->log);
+    }
+    pthread_mutex_unlock(&jni_static_lock);
 }
 
 static int init_jni(struct ao *ao)
 {
+    pthread_mutex_lock(&jni_static_lock);
     JNIEnv *env = MP_JNI_GET_ENV(ao);
-    if (mp_jni_init_jfields(env, &AudioTrack, AudioTrack.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &ByteBuffer, ByteBuffer.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioTimestamp, AudioTimestamp.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioManager, AudioManager.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioAttributes, AudioAttributes.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioAttributesBuilder, AudioAttributesBuilder.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioFormatBuilder, AudioFormatBuilder.mapping, 1, ao->log) < 0 ||
-        mp_jni_init_jfields(env, &AudioFormat, AudioFormat.mapping, 1, ao->log) < 0) {
-            uninit_jni(ao);
-            return -1;
+    if (jni_static_use_count == 0) {
+        if (mp_jni_init_jfields(env, &AudioTrack, AudioTrack.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &ByteBuffer, ByteBuffer.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioTimestamp, AudioTimestamp.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioManager, AudioManager.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioAttributes, AudioAttributes.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioAttributesBuilder, AudioAttributesBuilder.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioFormatBuilder, AudioFormatBuilder.mapping, 1, ao->log) < 0 ||
+            mp_jni_init_jfields(env, &AudioFormat, AudioFormat.mapping, 1, ao->log) < 0) {
+            goto error;
+        }
     }
-
+    jni_static_use_count++;
+    pthread_mutex_unlock(&jni_static_lock);
     return 0;
+
+error:
+    reset_jni_fields(env, ao->log);
+    pthread_mutex_unlock(&jni_static_lock);
+    return -1;
 }
 
 static void *playthread(void *arg)
