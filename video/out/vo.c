@@ -1000,7 +1000,13 @@ static void do_redraw(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
 
-    if (!vo->config_ok || (vo->driver->caps & VO_CAP_NORETAIN))
+    // VO_CAP_NORETAIN VOs have nothing to redraw: render_frame() drops
+    // in->current_frame. Unless they asked for it, in which case they get a
+    // frame with .current unset, and are supposed to update their OSD only.
+    if (!vo->config_ok)
+        return;
+    if ((vo->driver->caps & VO_CAP_NORETAIN) &&
+        !(vo->driver->caps & VO_CAP_OSD_ONLY_REDRAW))
         return;
 
     pthread_mutex_lock(&in->lock);

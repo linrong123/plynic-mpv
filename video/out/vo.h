@@ -184,6 +184,11 @@ enum {
     VO_CAP_NORETAIN     = 1 << 2,
     // VO supports applying film grain
     VO_CAP_FILM_GRAIN   = 1 << 3,
+    // VO can redraw without a video frame. Only useful together with
+    // VO_CAP_NORETAIN, which normally excludes a VO from redraws because no
+    // frame was kept: such a VO gets draw_frame() with vo_frame.current unset,
+    // and is expected to update only what it can (e.g. a separate OSD layer).
+    VO_CAP_OSD_ONLY_REDRAW = 1 << 4,
 };
 
 enum {
