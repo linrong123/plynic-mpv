@@ -48,6 +48,7 @@
 #include "osdep/threads.h"
 
 extern const struct vo_driver video_out_mediacodec_embed;
+extern const struct vo_driver video_out_mediacodec_osd;
 extern const struct vo_driver video_out_x11;
 extern const struct vo_driver video_out_vdpau;
 extern const struct vo_driver video_out_xv;
@@ -74,6 +75,7 @@ static const struct vo_driver *const video_out_drivers[] =
     &video_out_libmpv,
 #if HAVE_ANDROID
     &video_out_mediacodec_embed,
+    &video_out_mediacodec_osd,
 #endif
     &video_out_gpu,
 #if HAVE_LIBPLACEBO

@@ -700,6 +700,36 @@ Available video output drivers are:
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.
 
+``mediacodec_osd`` (Android)
+    Like ``mediacodec_embed``, but subtitles and the OSD are rendered by mpv on
+    the CPU into a second ``android.view.Surface`` supplied by the application,
+    which is expected to stack it on top of the video surface. Video filters,
+    the OSC and everything else that needs the video frame itself are still
+    unavailable.
+
+    Without ``--vo-mediacodec-osd-surface`` this driver behaves exactly like
+    ``mediacodec_embed``.
+
+    ``--vo-mediacodec-osd-surface=<int64>``
+        A JNI global reference to the ``android.view.Surface`` to draw the OSD
+        on, passed the same way as ``--wid``, i.e. as
+        ``(intptr_t)(*android.view.Surface)``. The reference stays owned by the
+        application; the driver never deletes it. ``0`` (the default) disables
+        OSD rendering.
+
+        The size of the buffers the driver draws into is whatever the surface
+        reports, so the application controls it with
+        ``SurfaceHolder.setFixedSize()``, and may pick something smaller than
+        the display.
+
+    ``--vo-mediacodec-osd-video-rect=<W[%][xH[%]][+x+y]>``
+        Where the video picture sits inside the OSD surface, in OSD surface
+        buffer pixels. The OSD surface normally covers the whole window, while
+        the video covers only a part of it; this is what makes subtitles in the
+        letterbox area and bitmap subtitles land in the right place. If unset,
+        the video is assumed to fill the OSD surface. Can be changed at
+        runtime; the OSD is re-rendered with the new margins.
+
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works
     whenever Wayland is present.
