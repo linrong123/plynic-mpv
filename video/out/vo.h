@@ -205,6 +205,11 @@ enum {
     VO_CAP_FRAMEOWNER   = 1 << 5,
     // VO does handle mp_image_params.vflip
     VO_CAP_VFLIP        = 1 << 6,
+    // VO can redraw without a video frame. Only useful together with
+    // VO_CAP_NORETAIN, which normally excludes a VO from redraws because no
+    // frame was kept: such a VO gets draw_frame() with vo_frame.current unset,
+    // and is expected to update only what it can (e.g. a separate OSD layer).
+    VO_CAP_OSD_ONLY_REDRAW = 1 << 7,
 };
 
 enum {
