@@ -474,7 +474,8 @@ if features['android']
     sources += files('misc/jni.c',
                      'osdep/android/strnlen.c',
                      'video/out/android_common.c',
-                     'video/out/vo_mediacodec_embed.c')
+                     'video/out/vo_mediacodec_embed.c',
+                     'video/out/vo_mediacodec_osd.c')
 endif
 
 uwp_opt = get_option('uwp').require(
