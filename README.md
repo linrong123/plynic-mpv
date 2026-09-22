@@ -1,3 +1,21 @@
+# plynic-mpv
+
+[plynic](https://github.com/linrong123/plynic)'s fork of mpv. Baseline: upstream commit
+`78d43740f5` (the commit media-kit's Android builds pin) plus a small patch stack,
+kept as commits on branch `plynic/78d43740f5`:
+
+- `client: add mpv_lavc_set_java_vm() for Android embedders`
+- `vo: let a VO opt into OSD-only redraws without a frame` (`VO_CAP_OSD_ONLY_REDRAW`)
+- `vo_mediacodec_osd: add Android VO with a CPU-drawn OSD surface` — video via
+  MediaCodec into one Surface, OSD/subtitles rendered by mpv into a second one
+  (`vo-mediacodec-osd-surface`, `vo-mediacodec-osd-video-rect`)
+
+Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android).
+Same license as upstream mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are
+offered under the same terms. Upstream README follows.
+
+---
+
 ![mpv logo](https://raw.githubusercontent.com/mpv-player/mpv.io/master/source/images/mpv-logo-128.png)
 
 # mpv
