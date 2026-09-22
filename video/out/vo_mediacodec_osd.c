@@ -15,6 +15,7 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -34,6 +35,7 @@
 #include "options/m_option.h"
 #include "sub/draw_bmp.h"
 #include "sub/osd.h"
+#include "sub/osd_state.h"      // OSDTYPE_SUB/SUB2, what render_index holds
 #include "video/hwdec.h"
 #include "video/mp_image.h"
 #include "vo.h"
@@ -51,6 +53,7 @@
 struct osd_opts {
     int64_t surface;
     struct m_geometry video_rect;
+    double sub_keepout;
 };
 
 #define OPT_BASE_STRUCT struct osd_opts
@@ -59,6 +62,8 @@ static const struct m_sub_options vo_mediacodec_osd_conf = {
     .opts = (const struct m_option[]) {
         {"vo-mediacodec-osd-surface", OPT_INT64(surface)},
         {"vo-mediacodec-osd-video-rect", OPT_RECT(video_rect)},
+        {"vo-mediacodec-osd-sub-keepout", OPT_DOUBLE(sub_keepout),
+            M_RANGE(0.0, 50.0)},
         {0},
     },
     .size = sizeof(struct osd_opts),
@@ -79,6 +84,7 @@ struct priv {
     struct mp_osd_res osd_res;
     struct mp_draw_sub_cache *osd_cache;
     double last_pts;
+    int sub_shift;              // rows apply_sub_keepout() last moved subs up
 
     bool locked;                // a lock is outstanding (draw_frame->flip_page)
     bool force_full;            // next update must repaint the whole buffer
@@ -290,6 +296,58 @@ static void copy_overlay(ANativeWindow_Buffer *buf, struct mp_rect *rc,
     }
 }
 
+static bool is_lower_sub_part(struct sub_bitmaps *sb, struct sub_bitmap *part,
+                              int half)
+{
+    return (sb->render_index == OSDTYPE_SUB || sb->render_index == OSDTYPE_SUB2)
+           && part->y + part->dh > half;
+}
+
+// The app covers the bottom sub_keepout percent of the OSD surface with its
+// own controls from time to time. While it does, lift the subtitles out from
+// under them - by exactly as much as the subtitle on screen right now needs,
+// which is what the app cannot compute: it does not know where a PGS bitmap or
+// an ASS line was authored. (sub-pos moves every subtitle by a fixed amount
+// from its authored position; a high one ends up far above the controls.)
+//
+// Only parts reaching into the lower half move, all by the same amount, so a
+// multi-line subtitle keeps its shape and a sign at the top stays put - the
+// heuristic sd_lavc applies to sub-pos. Nothing is moved above the top edge.
+// Returns the number of rows the parts were moved up.
+static int apply_sub_keepout(struct priv *p, struct sub_bitmap_list *sbs)
+{
+    if (p->opts->sub_keepout <= 0 || p->win_h <= 0)
+        return 0;
+
+    int limit = p->win_h - (int)(p->win_h * p->opts->sub_keepout / 100.0 + 0.5);
+    int half = p->win_h / 2;
+    int bottom = INT_MIN, top = INT_MAX;
+    for (int i = 0; i < sbs->num_items; i++) {
+        struct sub_bitmaps *sb = sbs->items[i];
+        for (int n = 0; n < sb->num_parts; n++) {
+            struct sub_bitmap *part = &sb->parts[n];
+            if (!is_lower_sub_part(sb, part, half))
+                continue;
+            bottom = MPMAX(bottom, part->y + part->dh);
+            top = MPMIN(top, part->y);
+        }
+    }
+
+    int shift = MPMIN(bottom - limit, top);
+    if (bottom == INT_MIN || shift <= 0)
+        return 0;
+
+    for (int i = 0; i < sbs->num_items; i++) {
+        struct sub_bitmaps *sb = sbs->items[i];
+        for (int n = 0; n < sb->num_parts; n++) {
+            struct sub_bitmap *part = &sb->parts[n];
+            if (is_lower_sub_part(sb, part, half))
+                part->y -= shift;
+        }
+    }
+    return shift;
+}
+
 static void draw_osd(struct vo *vo, double pts)
 {
     struct priv *p = vo->priv;
@@ -299,13 +357,24 @@ static void draw_osd(struct vo *vo, double pts)
 
     update_osd_res(vo);
 
-    if (!p->osd_cache)
-        p->osd_cache = mp_draw_sub_alloc(p, vo->global);
-
     struct sub_bitmap_list *sbs =
         osd_render(vo->osd, p->osd_res, pts, 0, mp_draw_sub_formats);
     if (!sbs)
         return;
+
+    // The overlay cache only re-renders an item whose change_id moved. A new
+    // shift with unchanged bitmaps (the keepout toggled, or the other
+    // subtitle track changed the lowest line) would leave parts at their old
+    // position, so start over whenever the shift differs.
+    int shift = apply_sub_keepout(p, sbs);
+    if (shift != p->sub_shift) {
+        p->sub_shift = shift;
+        TA_FREEP(&p->osd_cache);
+        p->force_full = true;
+    }
+
+    if (!p->osd_cache)
+        p->osd_cache = mp_draw_sub_alloc(p, vo->global);
 
     struct mp_rect act_rc[1], mod_rc[64];
     int num_act_rc = 0, num_mod_rc = 0;

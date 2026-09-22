@@ -730,6 +730,17 @@ Available video output drivers are:
         the video is assumed to fill the OSD surface. Can be changed at
         runtime; the OSD is re-rendered with the new margins.
 
+    ``--vo-mediacodec-osd-sub-keepout=<0-50>``
+        Keep subtitles out of the bottom part of the OSD surface, given in
+        percent of its height, e.g. while the application shows its own
+        controls there. Subtitle parts reaching into the lower half of the
+        surface are moved up together, by exactly as much as the lowest of them
+        needs to clear that area (and never above the top edge); a subtitle
+        that already sits above it is not moved. Unlike ``--sub-pos``, which
+        moves every subtitle by a fixed distance from where it was authored,
+        this depends on where the subtitle actually is. ``0`` (the default)
+        disables it. Can be changed at runtime, also while paused.
+
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works
     whenever Wayland is present.

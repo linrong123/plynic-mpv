@@ -9,6 +9,10 @@ kept as commits on branch `plynic/78d43740f5`:
 - `vo_mediacodec_osd: add Android VO with a CPU-drawn OSD surface` — video via
   MediaCodec into one Surface, OSD/subtitles rendered by mpv into a second one
   (`vo-mediacodec-osd-surface`, `vo-mediacodec-osd-video-rect`)
+- `vo_mediacodec_osd: keep subtitles out of a bottom band the app covers`
+  (`vo-mediacodec-osd-sub-keepout`) — lifts the subtitle actually on screen
+  exactly clear of the app's controls, which `sub-pos` cannot do because it
+  does not know where a PGS bitmap or ASS line was authored
 
 Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android).
 Same license as upstream mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are
