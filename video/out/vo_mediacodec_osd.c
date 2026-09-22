@@ -366,14 +366,22 @@ static int apply_sub_keepout(struct priv *p, struct sub_bitmap_list *sbs)
         }
     }
 
-    // Lift until the lowest part clears the band, but never by less than
-    // earlier while the band is up: each line's ink ends at a different height
-    // (descenders), and following it would make the baseline hop on every new
-    // subtitle. It also keeps the shift - and the full repaint a new shift
-    // costs, see draw_osd() - from changing on every line. Nothing goes above
-    // the top edge.
+    // Lift until the lowest part clears the band, but don't come down by the
+    // few rows one line's ink ends lower than the next (descenders) while the
+    // band is up: following that would make the baseline hop on every new
+    // subtitle, and cost a full repaint per line (see draw_osd()). A need
+    // smaller by more than that is a different subtitle altogether - another
+    // track picked from the menu the band is up for, a line authored higher -
+    // and gets exactly its own lift, or it would be pushed as far up as the
+    // previous one needed, into whatever sits above the band. Nothing goes
+    // above the top edge.
     int limit = h - (int)(h * keepout / 100.0 + 0.5);
-    p->shift_floor = MPMAX(p->shift_floor, bottom - limit);
+    int need = bottom - limit;
+    if (need < p->shift_floor - MPMAX(h * 3 / 100, 1)) {
+        p->shift_floor = need;
+    } else {
+        p->shift_floor = MPMAX(p->shift_floor, need);
+    }
     int shift = MPMIN(p->shift_floor, top);
     if (shift <= 0)
         return 0;

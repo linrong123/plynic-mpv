@@ -738,8 +738,10 @@ Available video output drivers are:
         as one block until the lowest of them clears that area (never above the
         top edge); a subtitle that already sits above it is not moved. Parts
         taller than half the surface (full-screen effects) never move. While
-        the value stays the same the lift only grows, so consecutive lines keep
-        a steady baseline. Unlike ``--sub-pos``, which moves every subtitle by
+        the value stays the same the lift does not come down by the few rows
+        one line's ink ends lower than the next, so consecutive lines keep a
+        steady baseline; a subtitle needing much less lift (another track, a
+        line authored higher) gets its own. Unlike ``--sub-pos``, which moves every subtitle by
         a fixed distance from where it was authored, this depends on where the
         subtitle actually is. ``0`` (the default) disables it. Can be changed
         at runtime, also while paused.
