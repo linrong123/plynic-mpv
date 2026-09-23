@@ -746,17 +746,19 @@ static int init(struct ao *ao)
     if (!env)
         return -1;
 
-    mp_mutex_init(&p->lock);
-    mp_cond_init(&p->wakeup);
-
     if (init_jni(ao) < 0)
         return -1;
+
+    // From here on, leave through the error path: uninit() releases all of
+    // this, down to the init_jni() reference.
+    mp_mutex_init(&p->lock);
+    mp_cond_init(&p->wakeup);
 
     if (af_fmt_is_spdif(ao->format)) {
         p->format = AudioFormat.ENCODING_IEC61937;
         if (!p->format || !AudioTrack.writeShortV23) {
             MP_ERR(ao, "spdif passthrough not supported by API\n");
-            return -1;
+            goto error;
         }
     } else if (ao->format == AF_FORMAT_U8) {
         p->format = AudioFormat.ENCODING_PCM_8BIT;
@@ -827,8 +829,8 @@ static int init(struct ao *ao)
         p->format
     );
     if (MP_JNI_EXCEPTION_LOG(ao) < 0 || buffer_size <= 0) {
-        MP_FATAL(ao, "AudioTrack.getMinBufferSize returned an invalid size: %d", buffer_size);
-        return -1;
+        MP_FATAL(ao, "AudioTrack.getMinBufferSize returned an invalid size: %d\n", buffer_size);
+        goto error;
     }
 
     // Choose double of the minimum buffer size suggested by the driver, but not
@@ -850,7 +852,7 @@ static int init(struct ao *ao)
     jobject timestamp = MP_JNI_NEW(AudioTimestamp.clazz, AudioTimestamp.ctor);
     if (MP_JNI_EXCEPTION_LOG(ao) < 0 || !timestamp) {
         MP_FATAL(ao, "AudioTimestamp could not be created\n");
-        return -1;
+        goto error;
     }
     p->timestamp = (*env)->NewGlobalRef(env, timestamp);
     MP_JNI_LOCAL_FREEP(&timestamp);
