@@ -81,6 +81,7 @@ struct priv {
 
     void *chunk;
     int chunksize;
+    int chunk_left;     // bytes at the start of chunk still to be written
     jbyteArray bytearray;
     jshortArray shortarray;
     jfloatArray floatarray;
@@ -709,24 +710,39 @@ static MP_THREAD_VOID ao_thread(void *arg)
             state = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlayState);
         }
         if (state == AudioTrack.PLAYSTATE_PLAYING) {
-            int read_samples = p->chunksize / ao->sstride;
-            int64_t ts = mp_time_ns();
-            ts += MP_TIME_S_TO_NS(read_samples / (double)(ao->samplerate));
-            ts += MP_TIME_S_TO_NS(AudioTrack_getLatency(ao));
-            int samples = ao_read_data(ao, &p->chunk, read_samples, ts, NULL, false, false);
-            if (!samples) {
-                // Underrun or EOF (or a pause/reset is on its way). Nothing
-                // tells this thread when the core refills the buffer, so poll,
-                // but don't spin: that would take CPU time from the decoder
-                // that is late already. 10 ms is well within the >= 75 ms
-                // the track buffer holds.
-                mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(10));
-                continue;
+            int len = p->chunk_left;
+            if (!len) {
+                int read_samples = p->chunksize / ao->sstride;
+                int64_t ts = mp_time_ns();
+                ts += MP_TIME_S_TO_NS(read_samples / (double)(ao->samplerate));
+                ts += MP_TIME_S_TO_NS(AudioTrack_getLatency(ao));
+                int samples = ao_read_data(ao, &p->chunk, read_samples, ts,
+                                           NULL, false, false);
+                if (!samples) {
+                    // Underrun or EOF (or a pause/reset is on its way).
+                    // Nothing tells this thread when the core refills the
+                    // buffer, so poll, but don't spin: that would take CPU
+                    // time from the decoder that is late already. 10 ms is
+                    // well within the >= 75 ms the track buffer holds.
+                    mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(10));
+                    continue;
+                }
+                len = samples * ao->sstride;
             }
-            int ret = AudioTrack_write(ao, samples * ao->sstride);
+            int ret = AudioTrack_write(ao, len);
             if (ret >= 0) {
                 p->written_frames += ret / ao->sstride;
                 p->write_errors = 0;
+                // pause() cuts a blocking write() short. The rest was taken
+                // from the core's buffer already: write it after the resume.
+                p->chunk_left = len - ret;
+                if (p->chunk_left && ret)
+                    memmove(p->chunk, (char *)p->chunk + ret, p->chunk_left);
+                if (!ret) {
+                    // Nothing went in (the track was paused first): don't
+                    // spin on the same data.
+                    mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(10));
+                }
             } else if (ret == AudioManager.ERROR_DEAD_OBJECT ||
                        ret == ERROR_NATIVE_DEAD_OBJECT ||
                        ++p->write_errors >= MAX_WRITE_ERRORS)
@@ -984,6 +1000,7 @@ static void stop(struct ao *ao)
     p->playhead_offset = 0;
     p->reset_pending = true;
     p->written_frames = 0;
+    p->chunk_left = 0;
     p->timestamp_fetched = 0;
     p->timestamp_set = false;
     p->last_delay = 0;
@@ -1011,6 +1028,32 @@ static void start(struct ao *ao)
     mp_mutex_unlock(&p->lock);
 }
 
+static bool set_pause(struct ao *ao, bool paused)
+{
+    struct priv *p = ao->priv;
+    if (!p->audiotrack)
+        return false;
+
+    if (!paused) {
+        start(ao);
+        return true;
+    }
+
+    // Unlike stop(), keep what the track holds, so playback resumes exactly
+    // where it was, and the positions that go with it. pause() makes a
+    // blocked write() return, see stop().
+    JNIEnv *env = MP_JNI_GET_ENV(ao);
+    MP_JNI_CALL_VOID(p->audiotrack, AudioTrack.pause);
+    MP_JNI_EXCEPTION_LOG(ao);
+
+    mp_mutex_lock(&p->lock);
+    // Don't extrapolate a timestamp from before the pause across it: poll a
+    // new one as soon as the track plays again.
+    p->timestamp_fetched = 0;
+    mp_mutex_unlock(&p->lock);
+    return true;
+}
+
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_audiotrack = {
@@ -1020,6 +1063,7 @@ const struct ao_driver audio_out_audiotrack = {
     .uninit    = uninit,
     .reset     = stop,
     .start     = start,
+    .set_pause = set_pause,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const OPT_BASE_STRUCT) {
         .cfg_pcm_float = 1,
