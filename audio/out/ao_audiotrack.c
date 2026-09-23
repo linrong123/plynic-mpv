@@ -48,6 +48,7 @@ struct priv {
     jint format;
     jint size;
     jint buffer_frames; // size of the track buffer in frames
+    jint latency_ms;    // last AudioTrack.getLatency()
 
     jobject timestamp;
     int64_t timestamp_fetched;
@@ -391,8 +392,11 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
     int64_t now = monotonic_ns();
     int state = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlayState);
 
+    // Once stable, still poll every second: a timestamp is only extrapolated
+    // from, so the effect of a latency change (another output) must not wait
+    // long to be seen.
     int stable_count = 20;
-    int64_t wait = p->timestamp_stable < stable_count ? 50000000 : 3000000000;
+    int64_t wait = p->timestamp_stable < stable_count ? 50000000 : 1000000000;
 
     if (state == AudioTrack.PLAYSTATE_PLAYING && p->format != AudioFormat.ENCODING_IEC61937 &&
         (p->timestamp_fetched == 0 || now - p->timestamp_fetched >= wait)) {
@@ -411,6 +415,12 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
                     p->timestamp_stable++;
                 }
             }
+        } else if (p->timestamp_set) {
+            // No timestamp any more (e.g. the track was moved to another
+            // output): don't go on extrapolating the old one, use the
+            // playback head until timestamps come back.
+            p->timestamp_set = false;
+            p->timestamp_stable = 0;
         }
     }
 
@@ -429,11 +439,19 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
             time += p->timestamp_offset;
         }
         if (fpos != 0 && time != 0 && state == AudioTrack.PLAYSTATE_PLAYING) {
-            double diff = (double)(now - time) / 1e9;
-            pos += diff * ao->samplerate;
+            int64_t age = now - time;
+            if (age > 2000000000) {
+                // Polled at least every second, so this timestamp is stale
+                // and extrapolating it this far can't be trusted.
+                p->timestamp_set = false;
+                p->timestamp_fetched = 0;
+            } else {
+                pos += (uint32_t)(MPMAX(age, 0) / 1e9 * ao->samplerate);
+            }
         }
         //MP_VERBOSE(ao, "position = %u via getTimestamp (state = %d / fpos= %u / time= %"PRId64")\n", pos, state, fpos, time);
-    } else {
+    }
+    if (!p->timestamp_set) {
         pos = 0xFFFFFFFFL & MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlaybackHeadPosition);
         //MP_VERBOSE(ao, "playbackHeadPosition = %u (reset_pending=%d)\n", pos, p->reset_pending);
     }
@@ -479,6 +497,34 @@ static double AudioTrack_getLatency(struct ao *ao)
     if (!p->audiotrack)
         return 0;
 
+    // Output latency beyond the track buffer, see below.
+    double latency = 0;
+    if (p->format != AudioFormat.ENCODING_IEC61937) {
+        jint latency_ms = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency);
+        if (latency_ms != p->latency_ms) {
+            // The track was moved to another output (a route change, e.g.
+            // speaker <-> Bluetooth), or this is the first call. A timestamp
+            // from before would put the play position off by the difference
+            // until the next poll: start over with the playback head and
+            // poll a new timestamp now. A restored track may also have a
+            // buffer of a different size.
+            if (p->latency_ms) {
+                MP_VERBOSE(ao, "AudioTrack latency %d -> %d ms\n",
+                           p->latency_ms, latency_ms);
+            }
+            p->latency_ms = latency_ms;
+            p->timestamp_set = false;
+            p->timestamp_fetched = 0;
+            if (AudioTrack.getBufferSizeInFramesV23) {
+                jint frames = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getBufferSizeInFramesV23);
+                if (frames > 0)
+                    p->buffer_frames = frames;
+            }
+        }
+        // getLatency() is the output latency plus the whole track buffer.
+        latency = MPMAX(0, latency_ms / 1000.0 - p->buffer_frames / (double)(ao->samplerate));
+    }
+
     uint32_t playhead = AudioTrack_getPlaybackHeadPosition(ao);
     // Signed: a position extrapolated from a timestamp runs past what was
     // written when the track underruns. Nothing is buffered then, and the
@@ -489,16 +535,11 @@ static double AudioTrack_getLatency(struct ao *ao)
         diff = 0;
     }
     double delay = diff / (double)(ao->samplerate);
-    if (!p->timestamp_set &&
-        p->format != AudioFormat.ENCODING_IEC61937)
-    {
-        // The head position counts what the mixer has consumed, so the output
-        // latency behind the track is missing. getLatency() is that latency
-        // plus the whole track buffer, which written - head already covers:
-        // add only the part beyond the track buffer.
-        double latency = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency) / 1000.0;
-        delay += MPMAX(0, latency - p->buffer_frames / (double)(ao->samplerate));
-    }
+    // The head position counts what the mixer has consumed, so the output
+    // latency behind the track is missing; the track buffer part of
+    // getLatency() is already covered by written - head.
+    if (!p->timestamp_set)
+        delay += latency;
     if (delay > 2.0) {
         // Not plausible with a track buffer of a fraction of a second. Poll a
         // new timestamp, and keep the last estimate meanwhile: returning 0
