@@ -29,6 +29,10 @@ kept as commits on branch `plynic/78d43740f5`:
   - `ao_audiotrack: extrapolate timestamps in CLOCK_MONOTONIC`
   - `ao_audiotrack: re-sync timestamps after a route change` (speaker <->
     Bluetooth used to leave up to 3 s of A/V offset)
+  - `ao_audiotrack: release everything when init() fails` (two early returns
+    kept the JNI use count up)
+  - `ao_audiotrack: back off when reloads keep failing` (beyond 3 reloads in
+    30 s, each further one waits 1 s doubling up to 30 s)
 
 Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android).
 Same license as upstream mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are
