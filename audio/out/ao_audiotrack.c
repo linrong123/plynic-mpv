@@ -45,11 +45,13 @@ struct priv {
     jint channel_config;
     jint format;
     jint size;
+    jint buffer_frames; // size of the track buffer in frames
 
     jobject timestamp;
     int64_t timestamp_fetched;
     bool timestamp_set;
     int timestamp_stable;
+    double last_delay;
 
     uint32_t written_frames; /* requires uint32_t rollover semantics */
     uint32_t playhead_pos;
@@ -366,6 +368,7 @@ static int AudioTrack_New(struct ao *ao)
         if (bufferSize > 0) {
             MP_VERBOSE(ao, "AudioTrack.getBufferSizeInFrames = %d\n", bufferSize);
             ao->device_buffer = bufferSize;
+            p->buffer_frames = bufferSize;
         }
     }
 
@@ -471,17 +474,36 @@ static double AudioTrack_getLatency(struct ao *ao)
         return 0;
 
     uint32_t playhead = AudioTrack_getPlaybackHeadPosition(ao);
-    uint32_t diff = p->written_frames - playhead;
+    // Signed: a position extrapolated from a timestamp runs past what was
+    // written when the track underruns. Nothing is buffered then, and the
+    // timestamp needs refreshing.
+    int32_t diff = (int32_t)(p->written_frames - playhead);
+    if (diff < 0) {
+        p->timestamp_fetched = 0;
+        diff = 0;
+    }
     double delay = diff / (double)(ao->samplerate);
     if (!p->timestamp_set &&
         p->format != AudioFormat.ENCODING_IEC61937)
-        delay += (double)MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency)/1000.0;
-    if (delay > 2.0) {
-        //MP_WARN(ao, "getLatency: written=%u playhead=%u diff=%u delay=%f\n", p->written_frames, playhead, diff, delay);
-        p->timestamp_fetched = 0;
-        return 0;
+    {
+        // The head position counts what the mixer has consumed, so the output
+        // latency behind the track is missing. getLatency() is that latency
+        // plus the whole track buffer, which written - head already covers:
+        // add only the part beyond the track buffer.
+        double latency = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getLatency) / 1000.0;
+        delay += MPMAX(0, latency - p->buffer_frames / (double)(ao->samplerate));
     }
-    return MPCLAMP(delay, 0.0, 2.0);
+    if (delay > 2.0) {
+        // Not plausible with a track buffer of a fraction of a second. Poll a
+        // new timestamp, and keep the last estimate meanwhile: returning 0
+        // would make the audio clock (and the video synced to it) jump.
+        MP_DBG(ao, "getLatency: written=%u playhead=%u delay=%f, ignored\n",
+               p->written_frames, playhead, delay);
+        p->timestamp_fetched = 0;
+        return p->last_delay;
+    }
+    p->last_delay = delay;
+    return delay;
 }
 
 static int AudioTrack_write(struct ao *ao, int len)
@@ -766,6 +788,7 @@ static int init(struct ao *ao)
     MP_VERBOSE(ao, "Setting bufferSize = %d (driver=%d, min=%d, max=%d)\n", p->size, buffer_size, min, max);
     mp_assert(p->size % bps == 0);
     ao->device_buffer = p->size / bps;
+    p->buffer_frames = p->size / (bps * ao->channels.num);
 
     p->chunksize = p->size;
     p->chunk = talloc_size(ao, p->size);
@@ -842,6 +865,7 @@ static void stop(struct ao *ao)
     p->written_frames = 0;
     p->timestamp_fetched = 0;
     p->timestamp_set = false;
+    p->last_delay = 0;
     mp_mutex_unlock(&p->lock);
 }
 
