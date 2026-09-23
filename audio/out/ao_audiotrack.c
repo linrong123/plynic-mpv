@@ -582,6 +582,15 @@ static MP_THREAD_VOID ao_thread(void *arg)
             ts += MP_TIME_S_TO_NS(read_samples / (double)(ao->samplerate));
             ts += MP_TIME_S_TO_NS(AudioTrack_getLatency(ao));
             int samples = ao_read_data(ao, &p->chunk, read_samples, ts, NULL, false, false);
+            if (!samples) {
+                // Underrun or EOF (or a pause/reset is on its way). Nothing
+                // tells this thread when the core refills the buffer, so poll,
+                // but don't spin: that would take CPU time from the decoder
+                // that is late already. 10 ms is well within the >= 75 ms
+                // the track buffer holds.
+                mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(10));
+                continue;
+            }
             int ret = AudioTrack_write(ao, samples * ao->sstride);
             if (ret >= 0) {
                 p->written_frames += ret / ao->sstride;
