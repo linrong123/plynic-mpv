@@ -23,6 +23,7 @@
 #include <time.h>
 
 #include "common/common.h"
+#include "config.h"
 #include "timer.h"
 
 static clockid_t clk_id;
@@ -47,7 +48,11 @@ uint64_t mp_raw_time_ns(void)
 void mp_raw_time_init(void)
 {
     static const clockid_t clock_ids[] = {
-#ifdef CLOCK_MONOTONIC_RAW
+        // Android's time base is CLOCK_MONOTONIC (System.nanoTime(), audio
+        // and frame timestamps). CLOCK_MONOTONIC_RAW is not what the platform
+        // relies on, and some kernels get it wrong: on an arm64 3.18 kernel
+        // it jumps back by minutes, which takes mp_time_ns() below zero.
+#if defined(CLOCK_MONOTONIC_RAW) && !HAVE_ANDROID
         CLOCK_MONOTONIC_RAW,
 #endif
         CLOCK_MONOTONIC,

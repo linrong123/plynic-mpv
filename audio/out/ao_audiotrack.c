@@ -404,8 +404,8 @@ static int AudioTrack_New(struct ao *ao)
 }
 
 // AudioTimestamp.nanoTime is in the CLOCK_MONOTONIC (System.nanoTime()) time
-// base. mp_raw_time_ns() is CLOCK_MONOTONIC_RAW on Linux, which is not
-// adjusted like CLOCK_MONOTONIC and drifts away from it.
+// base. Read that clock here instead of relying on which one mp_time_ns() is
+// based on (CLOCK_MONOTONIC_RAW on Linux, which drifts away from it).
 static int64_t monotonic_ns(void)
 {
     struct timespec ts;
