@@ -18,6 +18,11 @@ kept as commits on branch `plynic/78d43740f5`:
 - upstream backports (cherry-picked, adapted to this baseline):
   - `ao_audiotrack: make audiotrack jni multi-instance and multi-thread safe`
     (`46fe3cded0`)
+  - `ao: set_pause for pull based ao` (`93a924a553`) and
+    `ao: don't call driver->set_paused after reset` (`4d03efb4b0`)
+- `timer-linux: use CLOCK_MONOTONIC on Android` — Android's time base; on an
+  arm64 3.18 kernel CLOCK_MONOTONIC_RAW jumps by ±453 s and mpv aborted
+  (`time_us > 0`) as soon as a file was opened
 - `ao_audiotrack` robustness:
   - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
     offloaded track (multichannel PCM or passthrough over HDMI) is not restored
@@ -33,6 +38,9 @@ kept as commits on branch `plynic/78d43740f5`:
     kept the JNI use count up)
   - `ao_audiotrack: back off when reloads keep failing` (beyond 3 reloads in
     30 s, each further one waits 1 s doubling up to 30 s)
+  - `ao_audiotrack: pause the track instead of resetting it` (a pause used to
+    flush the 80-150 ms in the track; the audio clock jumped ahead by that
+    on resume)
 
 Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android).
 Same license as upstream mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are
