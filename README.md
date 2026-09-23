@@ -15,6 +15,20 @@ kept as commits on branch `plynic/78d43740f5`:
   does not know where a PGS bitmap or ASS line was authored; the follow-up
   `vo_mediacodec_osd: sub-keepout picks whole blocks and keeps a steady lift`
   fixes how that subtitle block is chosen
+- upstream backports (cherry-picked, adapted to this baseline):
+  - `ao_audiotrack: make audiotrack jni multi-instance and multi-thread safe`
+    (`46fe3cded0`)
+- `ao_audiotrack` robustness:
+  - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
+    offloaded track (multichannel PCM or passthrough over HDMI) is not restored
+    after a route change; it used to be recreated but never started (silence,
+    video frozen until a seek)
+  - `ao_audiotrack: don't spin while there is nothing to write` (underrun, EOF)
+  - `ao_audiotrack: don't count the track buffer twice in the delay` (until
+    the first timestamp after start/seek/resume, ~one buffer too much)
+  - `ao_audiotrack: extrapolate timestamps in CLOCK_MONOTONIC`
+  - `ao_audiotrack: re-sync timestamps after a route change` (speaker <->
+    Bluetooth used to leave up to 3 s of A/V offset)
 
 Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android).
 Same license as upstream mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are
