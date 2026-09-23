@@ -21,6 +21,8 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <time.h>
+
 #include "ao.h"
 #include "internal.h"
 #include "common/msg.h"
@@ -368,6 +370,17 @@ static int AudioTrack_New(struct ao *ao)
     return 0;
 }
 
+// AudioTimestamp.nanoTime is in the CLOCK_MONOTONIC (System.nanoTime()) time
+// base. mp_raw_time_ns() is CLOCK_MONOTONIC_RAW on Linux, which is not
+// adjusted like CLOCK_MONOTONIC and drifts away from it.
+static int64_t monotonic_ns(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts))
+        return 0;
+    return ts.tv_sec * INT64_C(1000000000) + ts.tv_nsec;
+}
+
 static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
 {
     struct priv *p = ao->priv;
@@ -375,7 +388,7 @@ static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
         return 0;
     JNIEnv *env = MP_JNI_GET_ENV(ao);
     uint32_t pos = 0;
-    int64_t now = mp_raw_time_ns();
+    int64_t now = monotonic_ns();
     int state = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlayState);
 
     int stable_count = 20;
