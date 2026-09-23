@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "timer.h"
+#include "config.h"
 
 void mp_sleep_ns(int64_t ns)
 {
@@ -35,7 +36,13 @@ void mp_sleep_ns(int64_t ns)
 uint64_t mp_raw_time_ns(void)
 {
     struct timespec tp = {0};
-#if defined(CLOCK_MONOTONIC_RAW)
+#if HAVE_ANDROID
+    // Android's time base is CLOCK_MONOTONIC (System.nanoTime(), audio and
+    // frame timestamps). CLOCK_MONOTONIC_RAW is not what the platform relies
+    // on, and some kernels get it wrong: on an arm64 3.18 kernel it jumps
+    // back by minutes, which takes mp_time_ns() below zero.
+    clock_gettime(CLOCK_MONOTONIC, &tp);
+#elif defined(CLOCK_MONOTONIC_RAW)
     clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
 #else
     timespec_get(&tp, TIME_UTC);
