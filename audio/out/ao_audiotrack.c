@@ -41,6 +41,24 @@ static int jni_static_use_count = 0;
 // Consecutive failed writes after which the track is given up on.
 #define MAX_WRITE_ERRORS 3
 
+// A track that dies right after every reload (a route or an audioserver that
+// keeps failing) must not make the core rebuild the AO in a loop. After
+// RELOAD_BURST reloads within RELOAD_WINDOW, each further one is delayed,
+// from RELOAD_DELAY_MIN doubling up to RELOAD_DELAY_MAX, until an AO has
+// lasted RELOAD_WINDOW. Times are in nanoseconds.
+#define RELOAD_BURST 3
+#define RELOAD_WINDOW MP_TIME_S_TO_NS(30)
+#define RELOAD_DELAY_MIN MP_TIME_S_TO_NS(1)
+#define RELOAD_DELAY_MAX MP_TIME_S_TO_NS(30)
+
+// The reload history can't live in struct priv, which a reload frees with
+// the AO it replaces. It is shared by all instances in the process, like the
+// cause of the failures: the output device and the audioserver are.
+static mp_static_mutex reload_lock = MP_STATIC_MUTEX_INITIALIZER;
+static int64_t reload_times[RELOAD_BURST]; // mp_time_ns() of the last requests
+static int reload_next;                    // index of the oldest one
+static int reload_backoff;                 // doublings of the delay so far
+
 struct priv {
     jobject audiotrack;
     jint samplerate;
@@ -73,6 +91,7 @@ struct priv {
 
     bool track_dead;    // write() failed for good, waiting for the AO reload
     int write_errors;   // consecutive failed write() calls
+    int64_t reload_at;  // mp_time_ns() to request the delayed reload at, or 0
 
     bool thread_terminate;
     bool thread_created;
@@ -640,6 +659,33 @@ error:
     return -1;
 }
 
+// How long to wait before requesting a reload now (nanoseconds).
+static int64_t reload_delay(int64_t now)
+{
+    mp_mutex_lock(&reload_lock);
+    int64_t oldest = reload_times[reload_next];
+    int64_t newest = reload_times[(reload_next + RELOAD_BURST - 1) % RELOAD_BURST];
+    int64_t delay = 0;
+    if (!newest || now - newest >= RELOAD_WINDOW)
+        reload_backoff = 0; // the last reloaded AO lasted
+    if (reload_backoff || (oldest && now - oldest < RELOAD_WINDOW)) {
+        delay = MPMIN(RELOAD_DELAY_MIN << reload_backoff, RELOAD_DELAY_MAX);
+        if (delay < RELOAD_DELAY_MAX)
+            reload_backoff++;
+    }
+    mp_mutex_unlock(&reload_lock);
+    return delay;
+}
+
+static void request_reload(struct ao *ao)
+{
+    mp_mutex_lock(&reload_lock);
+    reload_times[reload_next] = mp_time_ns();
+    reload_next = (reload_next + 1) % RELOAD_BURST;
+    mp_mutex_unlock(&reload_lock);
+    ao_request_reload(ao);
+}
+
 static MP_THREAD_VOID ao_thread(void *arg)
 {
     struct ao *ao = arg;
@@ -648,6 +694,16 @@ static MP_THREAD_VOID ao_thread(void *arg)
     mp_thread_set_name("ao/audiotrack");
     mp_mutex_lock(&p->lock);
     while (!p->thread_terminate) {
+        if (p->reload_at) {
+            // Sleep until the reload is due; uninit() (and start()/stop())
+            // wake this up early.
+            if (mp_time_ns() < p->reload_at) {
+                mp_cond_timedwait_until(&p->wakeup, &p->lock, p->reload_at);
+                continue;
+            }
+            p->reload_at = 0;
+            request_reload(ao);
+        }
         int state = AudioTrack.PLAYSTATE_PAUSED;
         if (p->audiotrack && !p->track_dead) {
             state = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlayState);
@@ -682,10 +738,19 @@ static MP_THREAD_VOID ao_thread(void *arg)
                 // the new route may need a different format anyway. Stop
                 // feeding it and let the core rebuild the AO, which
                 // renegotiates the format and starts it like any other.
-                MP_WARN(ao, "AudioTrack.write failed with %d, reloading the "
-                        "audio output\n", ret);
                 p->track_dead = true;
-                ao_request_reload(ao);
+                int64_t now = mp_time_ns();
+                int64_t delay = reload_delay(now);
+                if (delay) {
+                    MP_WARN(ao, "AudioTrack.write failed with %d, reloading the "
+                            "audio output in %d s (it keeps failing)\n", ret,
+                            (int)(delay / MP_TIME_S_TO_NS(1)));
+                    p->reload_at = now + delay;
+                } else {
+                    MP_WARN(ao, "AudioTrack.write failed with %d, reloading the "
+                            "audio output\n", ret);
+                    request_reload(ao);
+                }
             } else {
                 MP_ERR(ao, "AudioTrack.write failed with %d\n", ret);
                 mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(20));
