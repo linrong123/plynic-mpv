@@ -33,6 +33,12 @@
 static mp_static_mutex jni_static_lock = MP_STATIC_MUTEX_INITIALIZER;
 static int jni_static_use_count = 0;
 
+// Some devices return the native DEAD_OBJECT status (-EPIPE) from
+// AudioTrack.write() instead of translating it to ERROR_DEAD_OBJECT.
+#define ERROR_NATIVE_DEAD_OBJECT (-32)
+// Consecutive failed writes after which the track is given up on.
+#define MAX_WRITE_ERRORS 3
+
 struct priv {
     jobject audiotrack;
     jint samplerate;
@@ -59,6 +65,9 @@ struct priv {
 
     bool cfg_pcm_float;
     int cfg_session_id;
+
+    bool track_dead;    // write() failed for good, waiting for the AO reload
+    int write_errors;   // consecutive failed write() calls
 
     bool thread_terminate;
     bool thread_created;
@@ -368,17 +377,6 @@ static int AudioTrack_New(struct ao *ao)
     return 0;
 }
 
-static int AudioTrack_Recreate(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    JNIEnv *env = MP_JNI_GET_ENV(ao);
-
-    MP_JNI_CALL_VOID(p->audiotrack, AudioTrack.release);
-    MP_JNI_EXCEPTION_LOG(ao);
-    MP_JNI_GLOBAL_FREEP(&p->audiotrack);
-    return AudioTrack_New(ao);
-}
-
 static uint32_t AudioTrack_getPlaybackHeadPosition(struct ao *ao)
 {
     struct priv *p = ao->priv;
@@ -575,7 +573,7 @@ static MP_THREAD_VOID ao_thread(void *arg)
     mp_mutex_lock(&p->lock);
     while (!p->thread_terminate) {
         int state = AudioTrack.PLAYSTATE_PAUSED;
-        if (p->audiotrack) {
+        if (p->audiotrack && !p->track_dead) {
             state = MP_JNI_CALL_INT(p->audiotrack, AudioTrack.getPlayState);
         }
         if (state == AudioTrack.PLAYSTATE_PLAYING) {
@@ -587,13 +585,25 @@ static MP_THREAD_VOID ao_thread(void *arg)
             int ret = AudioTrack_write(ao, samples * ao->sstride);
             if (ret >= 0) {
                 p->written_frames += ret / ao->sstride;
-            } else if (ret == AudioManager.ERROR_DEAD_OBJECT) {
-                MP_WARN(ao, "AudioTrack.write failed with ERROR_DEAD_OBJECT. Recreating AudioTrack...\n");
-                if (AudioTrack_Recreate(ao) < 0) {
-                    MP_ERR(ao, "AudioTrack_Recreate failed\n");
-                }
+                p->write_errors = 0;
+            } else if (ret == AudioManager.ERROR_DEAD_OBJECT ||
+                       ret == ERROR_NATIVE_DEAD_OBJECT ||
+                       ++p->write_errors >= MAX_WRITE_ERRORS)
+            {
+                // The track is gone for good. A direct or offloaded output
+                // (multichannel PCM or passthrough over HDMI, some phones'
+                // direct PCM path) is not restored by AudioTrack when the
+                // route changes (BT/HDMI hotplug, audioserver restart), and
+                // the new route may need a different format anyway. Stop
+                // feeding it and let the core rebuild the AO, which
+                // renegotiates the format and starts it like any other.
+                MP_WARN(ao, "AudioTrack.write failed with %d, reloading the "
+                        "audio output\n", ret);
+                p->track_dead = true;
+                ao_request_reload(ao);
             } else {
                 MP_ERR(ao, "AudioTrack.write failed with %d\n", ret);
+                mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(20));
             }
         } else {
             mp_cond_timedwait(&p->wakeup, &p->lock, MP_TIME_MS_TO_NS(300));
@@ -807,8 +817,14 @@ static void stop(struct ao *ao)
     }
 
     JNIEnv *env = MP_JNI_GET_ENV(ao);
+    // The ao thread holds the lock while it writes. pause() makes a blocked
+    // write() return (and later ones not block), so take the lock after it;
+    // the frames of that last write() are then counted before the reset
+    // below, not after it.
     MP_JNI_CALL_VOID(p->audiotrack, AudioTrack.pause);
     MP_JNI_EXCEPTION_LOG(ao);
+
+    mp_mutex_lock(&p->lock);
     MP_JNI_CALL_VOID(p->audiotrack, AudioTrack.flush);
     MP_JNI_EXCEPTION_LOG(ao);
 
@@ -817,6 +833,7 @@ static void stop(struct ao *ao)
     p->written_frames = 0;
     p->timestamp_fetched = 0;
     p->timestamp_set = false;
+    mp_mutex_unlock(&p->lock);
 }
 
 static void start(struct ao *ao)
@@ -828,10 +845,16 @@ static void start(struct ao *ao)
     }
 
     JNIEnv *env = MP_JNI_GET_ENV(ao);
+    // The track is paused or new here, so the ao thread is (about to be)
+    // waiting and the lock is free soon. Take it before play(): once playing,
+    // the ao thread holds it for as long as it has data to write. Signal
+    // under it, or the wakeup is lost if the ao thread has just seen the
+    // track paused and not yet started waiting.
+    mp_mutex_lock(&p->lock);
     MP_JNI_CALL_VOID(p->audiotrack, AudioTrack.play);
     MP_JNI_EXCEPTION_LOG(ao);
-
     mp_cond_signal(&p->wakeup);
+    mp_mutex_unlock(&p->lock);
 }
 
 #define OPT_BASE_STRUCT struct priv
