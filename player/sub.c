@@ -46,6 +46,7 @@ static int get_order(struct MPContext *mpctx, struct track *track)
 
 static void reset_subtitles(struct MPContext *mpctx, struct track *track)
 {
+    track->redraw_on_packets = false;
     if (track->d_sub) {
         sub_reset(track->d_sub);
         sub_set_play_dir(track->d_sub, mpctx->play_dir);
@@ -125,6 +126,20 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
     bool packets_read = false;
     bool sub_updated = false;
     sub_read_packets(dec_sub, video_pts, mpctx->paused, &packets_read, &sub_updated);
+
+    // A track selected while paused on a video: the redraw that came with the
+    // switch showed what had been decoded by then - often nothing, as the
+    // demuxer delivers the new stream's packets only after reinit_sub() found
+    // it "ready" - and no new frame comes to show the rest. (A still image
+    // redraws below anyway.)
+    if (track->redraw_on_packets) {
+        if (!mpctx->paused || still_image) {
+            track->redraw_on_packets = false;
+        } else if (sub_updated) {
+            osd_changed(mpctx->osd);
+            mp_wakeup_core(mpctx);
+        }
+    }
 
     double osd_pts = osd_get_force_video_pts(mpctx->osd);
 
@@ -240,6 +255,7 @@ void reinit_sub(struct MPContext *mpctx, struct track *track)
         while (!track->demuxer_ready && mp_time_ns() < end)
             track->demuxer_ready = update_subtitles(mpctx, mpctx->playback_pts) ||
                                   !mpctx->paused;
+        track->redraw_on_packets = mpctx->paused;
         if (!track->demuxer_ready)
             mp_wakeup_core(mpctx);
 

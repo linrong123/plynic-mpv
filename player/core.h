@@ -133,6 +133,10 @@ struct track {
     bool auto_loaded;
 
     bool demuxer_ready; // if more packets should be read (subtitles only)
+    // Selected while paused: keep reading its packets and redraw whatever
+    // they change, no video frame will, until playback resumes or seeks
+    // (subtitles only)
+    bool redraw_on_packets;
 
     struct demuxer *demuxer;
     // Invariant: !stream || stream->demuxer == demuxer
