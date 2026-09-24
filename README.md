@@ -39,7 +39,7 @@ Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 
 ## plynic patches
 
-Four topics, about 1.05k lines of code (the budget is five topics, ~1.5k
+Four topics, about 1.1k lines of code (the budget is five topics, ~1.5k
 lines; see plynic's `docs/engine-strategy/README.md` §1):
 
 1. **JavaVM hook** — `client: add mpv_lavc_set_java_vm() for Android embedders`
@@ -56,9 +56,20 @@ lines; see plynic's `docs/engine-strategy/README.md` §1):
      the lift across small differences`
    - `sub: make sub-keepout a subtitle option of every VO` — the same
      algorithm moved into `osd_render()` as `--sub-keepout`, so it also works
-     through the render API (the texture path on iOS, macOS and phones);
-     `vo-mediacodec-osd-sub-keepout` stays as an alias. A new lift bumps the
-     subtitles' `change_id`, which is what every renderer's cache keys on
+     through the render API (the texture path on iOS, macOS and phones).
+     A new lift bumps the subtitles' `change_id`, which is what every
+     renderer's cache keys on. `vo-mediacodec-osd-sub-keepout` stays as an
+     alias **of the global option**: a value set under either name now lifts
+     the subtitles on every VO of that mpv instance until it is set back.
+     On the 0.36-era builds the old name only ever reached the OSD VO, so an
+     application that leaves the OSD VO (for vo_gpu, say) with its controls
+     up must now write 0 itself.
+   - `player: redraw when a track selected while paused gets its subtitles`
+     — the demuxer delivers a newly selected stream's packets after
+     `reinit_sub()` has already called it ready, and while paused nothing
+     redrew once they were decoded: the subtitle menu's pick showed nothing
+     (or a stale line) until unpause. Upstream behaviour on every VO; seen
+     on the OSD VO in about a third of paused switches to a PGS track
 3. **Android audio and platform**
    - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
      offloaded track (multichannel PCM or passthrough over HDMI) is not
@@ -90,6 +101,11 @@ lines; see plynic's `docs/engine-strategy/README.md` §1):
    - `stream_file: don't ask for the file system type on iOS` — fstatfs() is
      a privacy-manifest "required reason" API with no approved reason for
      this use, and iOS apps cannot mount network file systems anyway
+   - `ao_coreaudio: don't set kAudioOutputUnitProperty_ChannelMap` — 0.41
+     passes an AudioChannelLayout where that property wants an array of
+     SInt32; macOS 27 rejects it (-50) for mono and planar output and the AO
+     fails to open. Back to 0.40's behaviour (mpv #18384; #18463 proposes the
+     same); replace with upstream's fix once there is one
 
    macOS builds with `-Dswift-build=enabled`: 0.41 guards some cocoa call
    sites with `HAVE_COCOA` only while their implementations need
@@ -134,6 +150,13 @@ upstream code since 0.38–0.40.
   of `osd_render()`; its state is in `osd_state` and scales with the height
   of whoever renders. If `osd_render()` or the renderers' `change_id` caching
   change upstream, re-check that a new lift still reaches every cache.
+  plynic-libmpv-darwin's `tools/keepout` runs the checks on every build.
+- The paused-switch redraw hangs on `track->redraw_on_packets`, set in
+  `reinit_sub()` and read in `update_subtitle()` and
+  `handle_update_subtitles()` (which upstream never marks a track ready in).
+  If upstream reworks subtitle readiness, check whether it still needs us.
+- `ao_coreaudio`: drop our commit when upstream fixes #18384 and check on
+  macOS 27 that mono and planar output open.
 - Darwin: 0.41 only adds Objective-C once `TOOLS/macos-sdk-version.py`
   found a macOS SDK, and then also adds that SDK as link sysroot (wrong for
   iOS). With `b_lundef=false` (mpv's default) nothing complains about
