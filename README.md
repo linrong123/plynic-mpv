@@ -1,3 +1,117 @@
+# plynic-mpv
+
+[plynic](https://github.com/linrong123/plynic)'s fork of mpv. Baseline: the
+upstream release tag `v0.41.0` (`41f6a64506`), plus upstream fixes
+cherry-picked from master and a small patch stack, kept as commits on branch
+`plynic/v0.41.0`. Branch `plynic/78d43740f5` (upstream `78d43740f5`, the
+0.36-era commit media-kit's Android builds pinned) is frozen: it is what the
+`v1.1.11-plynic.*` releases of plynic-libmpv-android were built from.
+
+Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android)
+(`buildscripts/include/depinfo.sh` pins the commit). Same license as upstream
+mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are offered under the same
+terms. Upstream README follows below the line.
+
+## Upstream fixes (cherry-picked, `git cherry-pick -x`)
+
+One commit each, so a regression can be bisected to one of them:
+
+- `66ff2efbc7` sub/sd_lavc: zero-initialize sub_bitmap entries (the OSD VO's
+  sub-keepout reads those fields)
+- `4bbf014f09` sub/draw_bmp: fix rgba alpha blending, and `9ccd8899ff`
+  sub/draw_bmp: limit memset to available width in last slice
+  (`mp_draw_sub_overlay()` is how `vo_mediacodec_osd` draws subtitles)
+- `7ec8a7e9b1` vd_lavc: ensure decoder state is valid after reinit (the app
+  switches `hwdec` at run time; without it hardware decoding could silently
+  fall back to software after the reinit)
+- `c1c047f8d6` stream/lavf: check child_next return value before dereference
+- `fdb996adbc`, `fb5345809d`, `74271a7d80` sd_ass: animated-state reset and
+  indexing, subtitle timing rounding
+- `18d38d4f3e` demux: don't mark mid-stream cache ranges as BOF, and
+  `4dc772c429` stream: don't drop data on stream_read_more (event HLS, first
+  open)
+
+Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
+`115b87b521`, `b48fb6c86c`, `dbe496e6be` (not needed on 0.41, or conflicting).
+
+## plynic patches
+
+Four topics, about 1k lines (the budget is five topics, ~1.5k lines; see
+plynic's `docs/engine-strategy/README.md` §1):
+
+1. **JavaVM hook** — `client: add mpv_lavc_set_java_vm() for Android embedders`
+   (media_kit hands the JavaVM to libavcodec through it).
+2. **Android OSD VO**
+   - `vo: let a VO opt into OSD-only redraws without a frame`
+     (`VO_CAP_OSD_ONLY_REDRAW`)
+   - `vo_mediacodec_osd: add Android VO with a CPU-drawn OSD surface` — video
+     via MediaCodec into one Surface, OSD/subtitles rendered by mpv into a
+     second one (`vo-mediacodec-osd-surface`, `vo-mediacodec-osd-video-rect`)
+   - `vo_mediacodec_osd: keep subtitles out of a bottom band the app covers`
+     (`vo-mediacodec-osd-sub-keepout`), with the follow-ups `sub-keepout
+     picks whole blocks and keeps a steady lift` and `sub-keepout only holds
+     the lift across small differences`
+3. **Android audio and platform**
+   - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
+     offloaded track (multichannel PCM or passthrough over HDMI) is not
+     restored by AudioTrack after a route change; it used to be recreated
+     but never started (silence, video frozen until a seek)
+   - `ao_audiotrack: don't spin while there is nothing to write` (underrun,
+     EOF, or the core holding the buffer lock)
+   - `ao_audiotrack: don't count the track buffer twice in the delay`
+   - `ao_audiotrack: extrapolate timestamps in CLOCK_MONOTONIC`
+   - `ao_audiotrack: re-sync timestamps after a route change` (speaker <->
+     Bluetooth used to leave up to 3 s of A/V offset)
+   - `ao_audiotrack: release everything when init() fails` (early returns
+     kept the JNI use count up; on 0.41 this includes upstream's spdif check)
+   - `ao_audiotrack: back off when reloads keep failing`
+   - `ao_audiotrack: pause the track instead of resetting it` (a pause used
+     to flush the 80-150 ms in the track)
+   - `timer-linux: use CLOCK_MONOTONIC on Android` — Android's time base; on
+     an arm64 3.18 kernel CLOCK_MONOTONIC_RAW jumps by ±453 s and mpv aborted
+     as soon as a file was opened
+4. **Darwin** — reserved for the iOS/macOS build (objc meson fix, audiounit
+   session option); nothing yet.
+
+Each commit message says what changed against its `plynic/78d43740f5`
+original. Dropped in the move: the backports of `46fe3cded0` (audiotrack JNI
+multi-instance), `93a924a553` and `4d03efb4b0` (set_pause for pull AOs) —
+upstream code since 0.38–0.40.
+
+## Moving to a new upstream base: what bit last time
+
+- `libmpv/client.h` is `include/mpv/client.h` since 0.40; git's rename
+  detection carries the JavaVM hook over.
+- `VO_CAP_*` bits: 0.41 took `1<<4..6` (`UNTIMED`, `FRAMEOWNER`, `VFLIP`);
+  `VO_CAP_OSD_ONLY_REDRAW` is `1<<7`. `do_redraw()` returns for NORETAIN VOs
+  under the lock after clearing `request_redraw` (`8798cec7fa`,
+  `903c805a37`); the opt-out sits in that check. master rewrote the redraw
+  path again, so expect a conflict there on 0.42.
+- `draw_frame()` returns `bool` (`91c1b65de0`): `false` makes vo.c sleep
+  through the frame and report the window as not visible.
+- `ao_audiotrack.c` on 0.41: `pthread_*` → `mp_mutex`/`mp_cond`/`mp_thread`,
+  the microsecond timer API is gone (`8f432b2e37`), `ao_read_data()` takes
+  `eof`/`pad_silence`/`blocking` and only trylocks when non-blocking (0 can
+  mean "core busy"), `timestamp_offset` was removed as dead (`87d30899ff`),
+  and `init()` has an early spdif return (`3c1c848c2b`) that must take the
+  error path.
+- AudioTrack's content type (MOVIE/MUSIC) is only set with
+  `--audio-set-media-role=yes` since `e99daecbdb`; the app sets it.
+- The clock is chosen once, in `mp_raw_time_init()` (`891efca9d7`,
+  `0a6c179026`), still preferring `CLOCK_MONOTONIC_RAW`.
+- User-visible defaults: text subtitles are smaller (`8c3a7da619`: font
+  55 → 38, border 3 → 1.65, margin 22 → 34); `sub-ass-override=yes` no longer
+  applies `sub-scale` (only `scale`, the 0.41 default, does); `vo` and `wid`
+  are `UPDATE_VO` (each change rebuilds the VO and seeks the whole player).
+- `mpv-version` is stamped by the build as `v0.41.0-plynic-g<9 hex digits of
+  the commit>`, identically on Android and Darwin, instead of `git describe`.
+- Upstreaming (timer, the ao_audiotrack series, OSD-only redraw): mpv's
+  `DOCS/contribute.md` (`e76a35ec95`, master) does not accept commit messages
+  or PR descriptions written by an AI; they have to be rewritten by hand
+  first.
+
+---
+
 ![mpv logo](https://raw.githubusercontent.com/mpv-player/mpv.io/master/source/images/mpv-logo-128.png)
 
 # mpv
