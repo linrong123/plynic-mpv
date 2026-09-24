@@ -404,6 +404,10 @@ add_project_link_arguments(link_flags, language: ['c', 'cpp', 'objc'])
 
 # osdep
 if darwin
+    # Objective-C sources (cocoa, audiounit, ios-gl, avfoundation) need the
+    # compiler even when no macOS SDK is detected further down, which is the
+    # case for iOS cross builds and for sandboxed builds without xcrun.
+    add_languages('objc', native: false)
     path_source = files('osdep/path-darwin.c')
     timer_source = files('osdep/timer-darwin.c')
 endif
