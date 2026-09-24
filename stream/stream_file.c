@@ -47,6 +47,10 @@
 #include <sys/vfs.h>
 #endif
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #include <winioctl.h>
@@ -198,7 +202,11 @@ char *mp_file_get_path(void *talloc_ctx, bstr url)
     }
 }
 
-#if HAVE_BSD_FSTATFS
+// iOS apps cannot mount network file systems, so there is nothing to find
+// out there. fstatfs() is also one of the "required reason" APIs of Apple's
+// privacy manifests (disk space), and no approved reason covers asking for
+// the file system type only.
+#if HAVE_BSD_FSTATFS && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
 static bool check_stream_network(int fd)
 {
     struct statfs fs;
