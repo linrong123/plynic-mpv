@@ -8,7 +8,10 @@ cherry-picked from master and a small patch stack, kept as commits on branch
 `v1.1.11-plynic.*` releases of plynic-libmpv-android were built from.
 
 Built by [plynic-libmpv-android](https://github.com/linrong123/plynic-libmpv-android)
-(`buildscripts/include/depinfo.sh` pins the commit). Same license as upstream
+(`buildscripts/include/depinfo.sh` pins the commit) and
+[plynic-libmpv-darwin](https://github.com/linrong123/plynic-libmpv-darwin)
+(`flake.nix`/`flake.lock`, input `plynic-mpv`), both at the same commit, and
+both tag their releases `v0.41.0-plynic.<n>`. Same license as upstream
 mpv (LGPL-2.1+ with `-Dgpl=false`); the patches are offered under the same
 terms. Upstream README follows below the line.
 
@@ -36,8 +39,8 @@ Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 
 ## plynic patches
 
-Four topics, about 1k lines (the budget is five topics, ~1.5k lines; see
-plynic's `docs/engine-strategy/README.md` §1):
+Four topics, about 1.05k lines of code (the budget is five topics, ~1.5k
+lines; see plynic's `docs/engine-strategy/README.md` §1):
 
 1. **JavaVM hook** — `client: add mpv_lavc_set_java_vm() for Android embedders`
    (media_kit hands the JavaVM to libavcodec through it).
@@ -51,6 +54,11 @@ plynic's `docs/engine-strategy/README.md` §1):
      (`vo-mediacodec-osd-sub-keepout`), with the follow-ups `sub-keepout
      picks whole blocks and keeps a steady lift` and `sub-keepout only holds
      the lift across small differences`
+   - `sub: make sub-keepout a subtitle option of every VO` — the same
+     algorithm moved into `osd_render()` as `--sub-keepout`, so it also works
+     through the render API (the texture path on iOS, macOS and phones);
+     `vo-mediacodec-osd-sub-keepout` stays as an alias. A new lift bumps the
+     subtitles' `change_id`, which is what every renderer's cache keys on
 3. **Android audio and platform**
    - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
      offloaded track (multichannel PCM or passthrough over HDMI) is not
@@ -70,8 +78,24 @@ plynic's `docs/engine-strategy/README.md` §1):
    - `timer-linux: use CLOCK_MONOTONIC on Android` — Android's time base; on
      an arm64 3.18 kernel CLOCK_MONOTONIC_RAW jumps by ±453 s and mpv aborted
      as soon as a file was opened
-4. **Darwin** — reserved for the iOS/macOS build (objc meson fix, audiounit
-   session option); nothing yet.
+4. **Darwin**
+   - `meson: enable Objective-C on every Darwin host` — iOS cross builds and
+     sandboxed builds (no xcrun) never detect a macOS SDK, which is where
+     0.41 adds the language
+   - `ao_audiounit: add --audiounit-skip-session-management` — leaves the
+     shared AVAudioSession (category, mode, activation, deactivation,
+     preferred channel count) to the app; same name and meaning as in
+     media-kit's builds, without their reference counting or forced
+     MixWithOthers
+   - `stream_file: don't ask for the file system type on iOS` — fstatfs() is
+     a privacy-manifest "required reason" API with no approved reason for
+     this use, and iOS apps cannot mount network file systems anyway
+
+   macOS builds with `-Dswift-build=enabled`: 0.41 guards some cocoa call
+   sites with `HAVE_COCOA` only while their implementations need
+   `HAVE_SWIFT` (`osdep/mac/app_bridge.m`, `player/main.c`), so a cocoa build
+   without Swift would call into nothing. With Swift on, no guard commit is
+   needed.
 
 Each commit message says what changed against its `plynic/78d43740f5`
 original. Dropped in the move: the backports of `46fe3cded0` (audiotrack JNI
@@ -105,7 +129,18 @@ upstream code since 0.38–0.40.
   are `UPDATE_VO` (each change rebuilds the VO and seeks the whole player).
 - `mpv-version` is stamped by the build as `v0.41.0-plynic-g<9 hex digits of
   the commit>`, identically on Android and Darwin, instead of `git describe`.
-- Upstreaming (timer, the ao_audiotrack series, OSD-only redraw): mpv's
+- `--sub-keepout` lives in `mp_osd_render_sub_opts` (change flag
+  `UPDATE_OSD`, which is what redraws while paused) and is applied at the end
+  of `osd_render()`; its state is in `osd_state` and scales with the height
+  of whoever renders. If `osd_render()` or the renderers' `change_id` caching
+  change upstream, re-check that a new lift still reaches every cache.
+- Darwin: 0.41 only adds Objective-C once `TOOLS/macos-sdk-version.py`
+  found a macOS SDK, and then also adds that SDK as link sysroot (wrong for
+  iOS). With `b_lundef=false` (mpv's default) nothing complains about
+  frameworks nobody links (AVFoundation, CoreVideo, OpenGLES, IOSurface,
+  objc); plynic-libmpv-darwin links them and turns `b_lundef` on.
+- Upstreaming (timer, the ao_audiotrack series, OSD-only redraw, the
+  audiounit option, the objc meson fix): mpv's
   `DOCS/contribute.md` (`e76a35ec95`, master) does not accept commit messages
   or PR descriptions written by an AI; they have to be rewritten by hand
   first.
