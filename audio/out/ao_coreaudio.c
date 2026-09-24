@@ -136,7 +136,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
-static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd, AudioChannelLayout *layout, size_t layout_size);
+static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd);
 static void init_physical_format(struct ao *ao);
 static void reinit_latency(struct ao *ao);
 static bool register_hotplug_cb(struct ao *ao);
@@ -178,13 +178,8 @@ static int init(struct ao *ao)
 
     AudioStreamBasicDescription asbd;
     ca_fill_asbd(ao, &asbd);
-    size_t layout_size;
-    AudioChannelLayout *layout = ca_get_acl(ao, &layout_size);
 
-    bool r = init_audiounit(ao, asbd, layout, layout_size);
-    talloc_free(layout);
-
-    if (!r)
+    if (!init_audiounit(ao, asbd))
         goto coreaudio_error;
 
     reinit_latency(ao);
@@ -277,7 +272,7 @@ coreaudio_error:
     talloc_free(tmp);
 }
 
-static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd, AudioChannelLayout *layout, size_t layout_size)
+static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd)
 {
     OSStatus err;
     uint32_t size;
@@ -321,12 +316,14 @@ static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd, Audi
     CHECK_CA_ERROR_L(coreaudio_error_audiounit,
                      "can't link audio unit to selected device");
 
-    err = AudioUnitSetProperty(p->audio_unit,
-                               kAudioOutputUnitProperty_ChannelMap,
-                               kAudioUnitScope_Global, 0, layout, layout_size);
-
-    CHECK_CA_ERROR_L(coreaudio_error_audiounit,
-                     "unable to set the input channel layout on the audio unit");
+    // No kAudioOutputUnitProperty_ChannelMap. That property is an array of
+    // SInt32, one per output channel of the device, and 0.41 handed it an
+    // AudioChannelLayout, whose size depends on the channel count and the
+    // layout. macOS 27 rejects it with -50 for mono and for every planar
+    // sample format - most files, the decoders output planar float - and the
+    // AO failed to open. Until upstream sets a real channel map (mpv #18384),
+    // leave the AU's own mapping alone, as 0.40 did: a speaker swap made in
+    // Audio MIDI Setup is again not honoured by this AO (mpv #15584).
 
     AURenderCallbackStruct render_cb = (AURenderCallbackStruct) {
         .inputProc       = render_cb_lpcm,
