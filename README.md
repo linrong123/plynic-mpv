@@ -33,6 +33,14 @@ One commit each, so a regression can be bisected to one of them:
 - `18d38d4f3e` demux: don't mark mid-stream cache ranges as BOF, and
   `4dc772c429` stream: don't drop data on stream_read_more (event HLS, first
   open)
+- `c66204b69b` screenshot: correctly detect hardware frame. 0.41's
+  `9b1d47ece1` gives a hardware image the descriptor of its software
+  sub-format (`mp_image.fmt`), so `screenshot_get()` no longer saw that a
+  VideoToolbox frame needed downloading and handed it to libswscale: every
+  `screenshot-raw` of a hardware-decoded frame through the render API failed
+  on iOS and macOS ("Input image format videotoolbox not supported by
+  libswscale"). Android's MediaCodec surface frames carry no frames context,
+  so they kept the hardware descriptor and were never affected
 
 Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 `115b87b521`, `b48fb6c86c`, `dbe496e6be` (not needed on 0.41, or conflicting).
@@ -143,6 +151,10 @@ upstream code since 0.38–0.40.
   55 → 38, border 3 → 1.65, margin 22 → 34); `sub-ass-override=yes` no longer
   applies `sub-scale` (only `scale`, the 0.41 default, does); `vo` and `wid`
   are `UPDATE_VO` (each change rebuilds the VO and seeks the whole player).
+- A hardware `mp_image`'s `fmt` describes its software sub-format since
+  `9b1d47ece1` (0.41): test `IMGFMT_IS_HWACCEL(img->imgfmt)`, not
+  `img->fmt.flags & MP_IMGFLAG_HWACCEL`. Upstream fixed the screenshot path
+  (`c66204b69b`, cherry-picked here); check new code on the next base.
 - `mpv-version` is stamped by the build as `v0.41.0-plynic-g<9 hex digits of
   the commit>`, identically on Android and Darwin, instead of `git describe`.
 - `--sub-keepout` lives in `mp_osd_render_sub_opts` (change flag
