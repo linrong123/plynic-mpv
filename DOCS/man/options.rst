@@ -2569,6 +2569,24 @@ Subtitles
     Specify the position of secondary subtitles on the screen. This is similar
     to ``--sub-pos`` but for secondary subtitles.
 
+``--sub-keepout=<0-50>``
+    Keep subtitles out of the bottom part of the area they are rendered into
+    (normally the window), given in percent of its height, e.g. while an
+    application embedding libmpv shows its own controls there. The subtitle
+    parts starting in the lower half of the area, together with whatever
+    touches them from above, are moved up as one block until the lowest of
+    them clears that part (never above the top edge); a subtitle that already
+    sits above it is not moved. Parts taller than half the area (full-screen
+    effects) never move. While the value stays the same the lift does not come
+    down by the few rows one line's ink ends lower than the next, so
+    consecutive lines keep a steady baseline; a subtitle needing much less lift
+    (another track, a line authored higher) gets its own. Unlike
+    ``--sub-pos``, which moves every subtitle by a fixed distance from where it
+    was authored, this depends on where the subtitle actually is. Applies to
+    primary and secondary subtitles, text and bitmap alike, with any VO that
+    renders subtitles itself. ``0`` (the default) disables it. Can be changed
+    at runtime, also while paused.
+
 ``--sub-speed=<0.1-10.0>``
     Multiply the subtitle event timestamps with the given value. Can be used
     to fix the playback speed for frame-based subtitle formats. Affects text

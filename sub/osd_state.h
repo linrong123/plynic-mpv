@@ -83,6 +83,12 @@ struct osd_state {
     struct stats_ctx *stats;
 
     struct mp_draw_sub_cache *draw_cache;
+
+    // --sub-keepout, see apply_sub_keepout()
+    double keepout;             // value the floor belongs to
+    int keepout_h;              // OSD height the floor was measured at
+    int keepout_floor;          // largest lift needed since keepout changed
+    int keepout_shift;          // lift the returned subtitles were moved by
 };
 
 // defined in osd_libass.c

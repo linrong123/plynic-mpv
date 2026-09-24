@@ -15,6 +15,8 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -354,6 +356,111 @@ static struct sub_bitmaps *render_object(struct osd_state *osd,
     return res;
 }
 
+// --sub-keepout: the application covers the bottom sub_keepout percent of the
+// OSD area with its own controls from time to time. While it does, lift the
+// subtitles out from under them - by as much as the subtitle on screen
+// actually needs, which is what the application cannot compute: it does not
+// know where a PGS bitmap or an ASS line was authored. (sub-pos moves every
+// subtitle by a fixed amount from its authored position; a high one ends up
+// far above the controls.)
+//
+// Returns how far the lower block was moved up, or -1 when there was no lower
+// block (between two subtitles, or only the OSD in this list): nothing was
+// drawn that a shift could have left stale, so that must not count as a change
+// of shift.
+static int apply_sub_keepout(struct osd_state *osd, struct sub_bitmap_list *list,
+                             int h)
+{
+    double keepout = osd->opts->sub_keepout;
+    if (keepout != osd->keepout) {
+        // Every time the app puts its controls up starts afresh.
+        osd->keepout = keepout;
+        osd->keepout_floor = 0;
+    }
+    if (keepout <= 0 || h <= 0)
+        return 0;
+
+    // A part taller than half the area is not a line but a full-screen effect
+    // (an ASS \p drawing dimming the picture, a large DVB region). It neither
+    // moves nor may hold the lines back: the lift stops at the top edge, and
+    // such a part is always near it.
+    struct sub_bitmap **parts = NULL;
+    int num_parts = 0;
+    for (int i = 0; i < list->num_items; i++) {
+        struct sub_bitmaps *sb = list->items[i];
+        if (sb->render_index != OSDTYPE_SUB && sb->render_index != OSDTYPE_SUB2)
+            continue;
+        for (int n = 0; n < sb->num_parts; n++) {
+            if (sb->parts[n].dh <= h / 2)
+                MP_TARRAY_APPEND(list, parts, num_parts, &sb->parts[n]);
+        }
+    }
+
+    // The block to lift: the parts starting in the lower half, as sd_lavc
+    // picks them for sub-pos (a sign at the top stays put)...
+    int half = h / 2;
+    int top = INT_MAX, bottom = INT_MIN;
+    for (int n = 0; n < num_parts; n++) {
+        if (parts[n]->y >= half) {
+            top = MPMIN(top, parts[n]->y);
+            bottom = MPMAX(bottom, parts[n]->y + parts[n]->dh);
+        }
+    }
+    if (bottom == INT_MIN)
+        return -1;
+    // ...grown upwards through whatever touches it. libass hands out a line's
+    // fill, outline and shadow as separate parts with different boxes, and the
+    // lines of a block separately: judged one by one, a line starting just
+    // above the midline would leave its fill behind and move its outline.
+    int gap = MPMAX(h / 50, 1);
+    for (bool grown = true; grown;) {
+        grown = false;
+        for (int n = 0; n < num_parts; n++) {
+            struct sub_bitmap *s = parts[n];
+            if (s->y < top && s->y + s->dh >= top - gap) {
+                top = s->y;
+                bottom = MPMAX(bottom, s->y + s->dh);
+                grown = true;
+            }
+        }
+    }
+
+    // The floor is kept in pixels of the area it was measured in. Renderers
+    // that draw subtitles at another size (a screenshot, blending subtitles
+    // into the video) or a resized OSD area get it scaled, not reset.
+    if (h != osd->keepout_h) {
+        if (osd->keepout_h > 0)
+            osd->keepout_floor = lrint(osd->keepout_floor * (double)h / osd->keepout_h);
+        osd->keepout_h = h;
+    }
+
+    // Lift until the lowest part clears the band, but don't come down by the
+    // few rows one line's ink ends lower than the next (descenders) while the
+    // band is up: following that would make the baseline hop on every new
+    // subtitle, and cost the renderers a re-upload per line. A need smaller by
+    // more than that is a different subtitle altogether - another track picked
+    // from the menu the band is up for, a line authored higher - and gets
+    // exactly its own lift, or it would be pushed as far up as the previous
+    // one needed, into whatever sits above the band. Nothing goes above the
+    // top edge.
+    int limit = h - (int)(h * keepout / 100.0 + 0.5);
+    int need = bottom - limit;
+    if (need < osd->keepout_floor - MPMAX(h * 3 / 100, 1)) {
+        osd->keepout_floor = need;
+    } else {
+        osd->keepout_floor = MPMAX(osd->keepout_floor, need);
+    }
+    int shift = MPMIN(osd->keepout_floor, top);
+    if (shift <= 0)
+        return 0;
+
+    for (int n = 0; n < num_parts; n++) {
+        if (parts[n]->y >= top)
+            parts[n]->y -= shift;
+    }
+    return shift;
+}
+
 // Render OSD to a list of bitmap and return it. The returned object is
 // refcounted. Typically you should hold it only for a short time, and then
 // release it.
@@ -412,6 +519,26 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
         list->change_id += obj->vo_change_id;
 
         talloc_free(imgs);
+    }
+
+    // Renderers cache subtitle bitmaps by change_id, which a shift does not
+    // touch: they would keep showing a part at its old place, and draw_bmp
+    // keeps each part's scaled copy sized to how it was clipped - lifting a
+    // PGS part that hung off the bottom edge changes that size under the same
+    // change_id (an assert). So a new shift is a change of the subtitles.
+    int shift = apply_sub_keepout(osd, list, res.h);
+    if (shift >= 0 && shift != osd->keepout_shift) {
+        osd->keepout_shift = shift;
+        for (int n = 0; n < list->num_items; n++) {
+            struct sub_bitmaps *imgs = list->items[n];
+            if (imgs->render_index != OSDTYPE_SUB &&
+                imgs->render_index != OSDTYPE_SUB2)
+                continue;
+            struct osd_object *obj = osd->objs[imgs->render_index];
+            obj->vo_change_id += 1;
+            imgs->change_id = obj->vo_change_id;
+            list->change_id += 1;
+        }
     }
 
     double elapsed = MP_TIME_NS_TO_MS(mp_time_ns() - start_time);
