@@ -162,6 +162,15 @@ Available audio output drivers are:
 ``audiounit`` (iOS only)
     Native iOS audio output driver using ``AudioUnits`` and AudioToolbox.
 
+    ``--audiounit-skip-session-management=<yes|no>``
+        Leave the shared ``AVAudioSession`` alone: do not set its category,
+        mode or preferred number of output channels, and do not activate it
+        when the AO starts or deactivate it when the AO is destroyed. For
+        applications that manage the audio session themselves; they have to
+        activate it before playback starts, and should set the preferred
+        number of output channels, or multichannel audio is downmixed to
+        stereo. Default: no.
+
 ``openal``
     OpenAL audio output driver.
 

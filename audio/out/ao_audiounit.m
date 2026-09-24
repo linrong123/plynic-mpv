@@ -33,6 +33,7 @@
 struct priv {
     AudioUnit audio_unit;
     double device_latency;
+    bool skip_session_management;
 };
 
 static OSStatus au_get_ary(AudioUnit unit, AudioUnitPropertyID inID, AudioUnitScope inScope, AudioUnitElement inElement, void **data, UInt32 *outDataSize)
@@ -115,15 +116,19 @@ static bool init_audiounit(struct ao *ao)
 
     MP_VERBOSE(ao, "max channels: %ld, requested: %d\n", maxChannels, (int)ao->channels.num);
 
-    AVAudioSessionCategoryOptions options = 0;
-    if (!(ao->init_flags & AO_INIT_EXCLUSIVE)) {
-        options |= AVAudioSessionCategoryOptionMixWithOthers;
-    }
+    if (p->skip_session_management) {
+        MP_VERBOSE(ao, "leaving the audio session to the application\n");
+    } else {
+        AVAudioSessionCategoryOptions options = 0;
+        if (!(ao->init_flags & AO_INIT_EXCLUSIVE)) {
+            options |= AVAudioSessionCategoryOptionMixWithOthers;
+        }
 
-    [instance setCategory:AVAudioSessionCategoryPlayback withOptions:options error:nil];
-    [instance setMode:AVAudioSessionModeMoviePlayback error:nil];
-    [instance setActive:YES error:nil];
-    [instance setPreferredOutputNumberOfChannels:prefChannels error:nil];
+        [instance setCategory:AVAudioSessionCategoryPlayback withOptions:options error:nil];
+        [instance setMode:AVAudioSessionModeMoviePlayback error:nil];
+        [instance setActive:YES error:nil];
+        [instance setPreferredOutputNumberOfChannels:prefChannels error:nil];
+    }
 
     AudioComponentDescription desc = (AudioComponentDescription) {
         .componentType         = kAudioUnitType_Output,
@@ -235,10 +240,12 @@ static void uninit(struct ao *ao)
     AudioUnitUninitialize(p->audio_unit);
     AudioComponentInstanceDispose(p->audio_unit);
 
-    [AVAudioSession.sharedInstance
-        setActive:NO
-        withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-        error:nil];
+    if (!p->skip_session_management) {
+        [AVAudioSession.sharedInstance
+            setActive:NO
+            withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+            error:nil];
+    }
 }
 
 static int init(struct ao *ao)
@@ -262,4 +269,9 @@ const struct ao_driver audio_out_audiounit = {
     .reset          = stop,
     .start          = start,
     .priv_size      = sizeof(struct priv),
+    .options        = (const struct m_option[]){
+        {"skip-session-management", OPT_BOOL(skip_session_management)},
+        {0}
+    },
+    .options_prefix = "audiounit",
 };
