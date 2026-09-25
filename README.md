@@ -41,6 +41,15 @@ One commit each, so a regression can be bisected to one of them:
   on iOS and macOS ("Input image format videotoolbox not supported by
   libswscale"). Android's MediaCodec surface frames carry no frames context,
   so they kept the hardware descriptor and were never affected
+- `7a94ec5719` vo_libmpv: use the VO_CAP of the renderer backend instead of
+  the VO. vo_libmpv announces `VO_CAP_ROTATE90` whatever the render API
+  backend, and computed its source rectangle for a rotated picture even for
+  the software renderer (`MPV_RENDER_API_TYPE_SW`), which cannot rotate:
+  every frame of a file rotated by 90 or 270 degrees (a phone's portrait
+  video) or with `video-rotate=90` aborted the process on an assertion in
+  `mp_image_crop()`. media_kit_video renders that way in the iOS simulator
+  and on a device whose OpenGL texture cannot be created. Now such a frame
+  is drawn unrotated by that renderer; the OpenGL one rotates as before
 
 Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 `115b87b521`, `b48fb6c86c`, `dbe496e6be` (not needed on 0.41, or conflicting).
@@ -155,6 +164,14 @@ upstream code since 0.38–0.40.
   `9b1d47ece1` (0.41): test `IMGFMT_IS_HWACCEL(img->imgfmt)`, not
   `img->fmt.flags & MP_IMGFLAG_HWACCEL`. Upstream fixed the screenshot path
   (`c66204b69b`, cherry-picked here); check new code on the next base.
+- Rotation is the VO's (`VO_CAP_ROTATE90`: vo_gpu, vo_libmpv's OpenGL
+  backend). A chain whose VO cannot rotate asks lavfi for its `rotate`
+  filter (`f_auto_filters.c`, autorotate), which neither build has (their
+  FFmpeg keeps two filters, overlay and equalizer): with `vo=null` (an
+  embedder's placeholder before it has a video output) a rotated frame logs
+  "filter 'rotate' not found or failed to allocate" (fatal) and passes on
+  unrotated; MediaCodec surface frames cannot be rotated in software at all.
+  The render API's software backend draws unrotated since `7a94ec5719`.
 - `mpv-version` is stamped by the build as `v0.41.0-plynic-g<9 hex digits of
   the commit>`, identically on Android and Darwin, instead of `git describe`.
 - `--sub-keepout` lives in `mp_osd_render_sub_opts` (change flag
