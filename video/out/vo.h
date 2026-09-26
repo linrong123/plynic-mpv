@@ -210,6 +210,11 @@ enum {
     // frame was kept: such a VO gets draw_frame() with vo_frame.current unset,
     // and is expected to update only what it can (e.g. a separate OSD layer).
     VO_CAP_OSD_ONLY_REDRAW = 1 << 7,
+    // The hardware decoder renders straight into the VO's surface, where
+    // nothing after the decoder can turn the picture: the decoder applies
+    // mp_image_params.rotate itself (MediaCodec's KEY_ROTATION, set up by
+    // vd_lavc). Only together with VO_CAP_ROTATE90.
+    VO_CAP_DECODER_ROTATE = 1 << 8,
 };
 
 enum {

@@ -19,6 +19,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "filter.h"
 
@@ -27,6 +28,23 @@ struct mp_codec_params;
 struct mp_image_params;
 struct mp_decoder_list;
 struct demux_packet;
+struct dec_queue_opts;
+
+// dec_wrapper_conf (options/options.h)
+struct dec_wrapper_opts {
+    double movie_aspect;
+    int aspect_method;
+    double fps_override;
+    bool correct_pts;
+    int video_rotate;
+    char *audio_decoders;
+    char *video_decoders;
+    char *audio_spdif;
+    struct dec_queue_opts *vdec_queue_opts;
+    struct dec_queue_opts *adec_queue_opts;
+    int64_t video_reverse_size;
+    int64_t audio_reverse_size;
+};
 
 // (free with talloc_free(mp_decoder_wrapper.f)
 struct mp_decoder_wrapper {

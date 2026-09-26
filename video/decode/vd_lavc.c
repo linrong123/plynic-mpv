@@ -198,6 +198,8 @@ typedef struct lavc_ctx {
     struct vd_lavc_params *opts;
     struct m_config_cache *hwdec_opts_cache;
     struct hwdec_opts *hwdec_opts;
+    struct m_config_cache *dec_opts_cache;
+    struct dec_wrapper_opts *dec_opts;
     struct mp_codec_params *codec;
     AVCodecContext *avctx;
     AVFrame *pic;
@@ -238,6 +240,10 @@ typedef struct lavc_ctx {
     AVBufferRef *hwdec_dev;
 
     bool hwdec_request_reinit;
+
+    // Rotation the decoder was set up to apply to the VO's surface
+    // (decoder_rotation()); -1 if it renders nowhere the VO shows directly.
+    int decoder_rotate;
     int hwdec_fail_count;
 
     struct mp_image_pool *hwdec_swpool;
@@ -708,6 +714,22 @@ static void reinit(struct mp_filter *vd)
     ctx->wait_for_keyframe = ctx->use_hwdec ? HWDEC_WAIT_KEYFRAME_COUNT : 0;
 }
 
+// The rotation a decoder that renders straight into the VO's surface has to
+// apply (VO_CAP_DECODER_ROTATE: MediaCodec for vo_mediacodec_embed/_osd), or
+// -1 for any other decoder. It is the rotation fix_image_params() in
+// f_decoder_wrapper.c gives these frames, which carry none of their own: the
+// stream's plus --video-rotate.
+static int decoder_rotation(struct mp_filter *vd)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+
+    if (!ctx->use_hwdec || ctx->hwdec.copying || !ctx->vo ||
+        !(ctx->vo->driver->caps & VO_CAP_DECODER_ROTATE))
+        return -1;
+    int rotate = ctx->dec_opts->video_rotate;
+    return rotate < 0 ? 0 : (ctx->codec->rotate + rotate) % 360;
+}
+
 static void init_avctx(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
@@ -846,6 +868,23 @@ static void init_avctx(struct mp_filter *vd)
     // Do this after the above avopt handling in case it changes values
     ctx->skip_frame = avctx->skip_frame;
 
+    // MediaCodec takes the rotation when it is configured, and turns what it
+    // renders into the surface (the decoders' "rotation" option).
+    m_config_cache_update(ctx->dec_opts_cache);
+    ctx->decoder_rotate = decoder_rotation(vd);
+    if (ctx->decoder_rotate > 0) {
+        if (ctx->decoder_rotate % 90 == 0 &&
+            av_opt_set_int(avctx, "rotation", ctx->decoder_rotate,
+                           AV_OPT_SEARCH_CHILDREN) >= 0)
+        {
+            MP_VERBOSE(vd, "Decoder rotates the video by %d degrees.\n",
+                       ctx->decoder_rotate);
+        } else {
+            MP_WARN(vd, "Decoder cannot rotate the video by %d degrees, it "
+                        "is shown unrotated.\n", ctx->decoder_rotate);
+        }
+    }
+
     if (mp_set_avctx_codec_headers(avctx, c) < 0) {
         MP_ERR(vd, "Could not set codec parameters.\n");
         goto error;
@@ -932,6 +971,7 @@ static void uninit_avctx(struct mp_filter *vd)
     ctx->hw_probing = false;
     ctx->hwdec = (struct hwdec_info){0};
     ctx->use_hwdec = false;
+    ctx->decoder_rotate = -1;
 }
 
 static int init_generic_hwaccel(struct AVCodecContext *avctx, enum AVPixelFormat hw_fmt)
@@ -1418,6 +1458,15 @@ static void vd_lavc_process(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
+    // A decoder that rotates for the VO applies a new --video-rotate only as
+    // a new decoder instance.
+    if (ctx->decoder_rotate >= 0 && m_config_cache_update(ctx->dec_opts_cache) &&
+        decoder_rotation(vd) != ctx->decoder_rotate)
+    {
+        MP_VERBOSE(vd, "Rotation changed, reinitializing the decoder.\n");
+        reinit(vd);
+    }
+
     lavc_process(vd, &ctx->state, send_packet, receive_frame);
 }
 
@@ -1467,6 +1516,9 @@ static struct mp_decoder *create(struct mp_filter *parent,
     ctx->opts = ctx->opts_cache->opts;
     ctx->hwdec_opts_cache = m_config_cache_alloc(ctx, vd->global, &hwdec_conf);
     ctx->hwdec_opts = ctx->hwdec_opts_cache->opts;
+    ctx->dec_opts_cache = m_config_cache_alloc(ctx, vd->global, &dec_wrapper_conf);
+    ctx->dec_opts = ctx->dec_opts_cache->opts;
+    ctx->decoder_rotate = -1;
     ctx->codec = codec;
     ctx->decoder = talloc_strdup(ctx, decoder);
     ctx->hwdec_swpool = mp_image_pool_new(ctx);

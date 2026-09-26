@@ -732,6 +732,16 @@ Available video output drivers are:
     many of mpv's features (subtitle rendering, OSD/OSC, video filters, etc)
     are not available with this driver.
 
+    A rotated video (the rotation in the file, plus ``--video-rotate`` in
+    steps of 90 degrees) is turned by MediaCodec when it is configured; this
+    needs FFmpeg's MediaCodec decoders to have a ``rotation`` option (FFmpeg
+    does not have it upstream; without it the video is shown unrotated, with a
+    warning). MediaCodec scales the turned picture to the whole surface, so
+    the surface should have the aspect of the rotated picture
+    (``video-params/rotate`` says whether to swap ``dw`` and ``dh``). A change
+    of ``--video-rotate`` creates a new decoder, which resumes at the next
+    keyframe.
+
     To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
     or ``mediacodec-copy`` along with ``--gpu-context=android``.
 
@@ -743,7 +753,8 @@ Available video output drivers are:
     unavailable.
 
     Without ``--vo-mediacodec-osd-surface`` this driver behaves exactly like
-    ``mediacodec_embed``.
+    ``mediacodec_embed``. Rotation works as there; the OSD and subtitles are
+    drawn upright around the video rect the application gives.
 
     ``--vo-mediacodec-osd-surface=<int64>``
         A JNI global reference to the ``android.view.Surface`` to draw the OSD

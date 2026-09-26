@@ -47,6 +47,11 @@
 //
 // The VO never learns (or cares) whether that second Surface is backed by a
 // SurfaceView or by a texture; it only ever sees one jobject.
+//
+// A rotated video is turned by MediaCodec (VO_CAP_DECODER_ROTATE); the OSD is
+// drawn upright into the video rect the application gives, which it lays out
+// for the rotated picture, as vo_gpu places the OSD around a picture it
+// rotates.
 
 struct osd_opts {
     int64_t surface;
@@ -543,7 +548,8 @@ static void uninit(struct vo *vo)
 const struct vo_driver video_out_mediacodec_osd = {
     .description = "Android (Embedded MediaCodec Surface with CPU OSD)",
     .name = "mediacodec_osd",
-    .caps = VO_CAP_NORETAIN | VO_CAP_OSD_ONLY_REDRAW,
+    .caps = VO_CAP_NORETAIN | VO_CAP_OSD_ONLY_REDRAW | VO_CAP_ROTATE90 |
+            VO_CAP_DECODER_ROTATE,
     .preinit = preinit,
     .query_format = query_format,
     .control = control,
