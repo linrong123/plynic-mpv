@@ -56,12 +56,12 @@ Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 
 ## plynic patches
 
-Four topics, about 1.1k lines of code (the budget is five topics, ~1.5k
+Four topics, about 1.15k lines of code (the budget is five topics, ~1.5k
 lines; see plynic's `docs/engine-strategy/README.md` §1):
 
 1. **JavaVM hook** — `client: add mpv_lavc_set_java_vm() for Android embedders`
    (media_kit hands the JavaVM to libavcodec through it).
-2. **Android OSD VO**
+2. **Android OSD VO** (and the rotation of both MediaCodec VOs)
    - `vo: let a VO opt into OSD-only redraws without a frame`
      (`VO_CAP_OSD_ONLY_REDRAW`)
    - `vo_mediacodec_osd: add Android VO with a CPU-drawn OSD surface` — video
@@ -87,6 +87,19 @@ lines; see plynic's `docs/engine-strategy/README.md` §1):
      redrew once they were decoded: the subtitle menu's pick showed nothing
      (or a stale line) until unpause. Upstream behaviour on every VO; seen
      on the OSD VO in about a third of paused switches to a PGS track
+   - `vo_mediacodec_embed, vo_mediacodec_osd: rotate in MediaCodec` — a
+     video rotated by 90 or 270 degrees (a phone's portrait video) came out
+     sideways on both: MediaCodec renders into the application's surface and
+     nothing else sees the pixels. The VOs now say so
+     (`VO_CAP_DECODER_ROTATE`, with `VO_CAP_ROTATE90`), and vd_lavc sets the
+     rotation fix_image_params() gives those frames (the stream's plus
+     `--video-rotate`) as the FFmpeg MediaCodec decoder's `rotation` option,
+     which MediaCodec takes as `KEY_ROTATION` at configure time (a new
+     `--video-rotate` creates a new decoder). The option is plynic's FFmpeg
+     patch, Android only (plynic-libmpv-android
+     `buildscripts/patches/ffmpeg-android/mediacodecdec_rotation.patch`);
+     without it the video stays unrotated, with a warning. `video-params`
+     reports what it did before (decoded size, `rotate=90`), as with vo=gpu
 3. **Android audio and platform**
    - `ao_audiotrack: reload the AO when the AudioTrack dies` — a direct or
      offloaded track (multichannel PCM or passthrough over HDMI) is not
@@ -140,7 +153,7 @@ upstream code since 0.38–0.40.
 - `libmpv/client.h` is `include/mpv/client.h` since 0.40; git's rename
   detection carries the JavaVM hook over.
 - `VO_CAP_*` bits: 0.41 took `1<<4..6` (`UNTIMED`, `FRAMEOWNER`, `VFLIP`);
-  `VO_CAP_OSD_ONLY_REDRAW` is `1<<7`. `do_redraw()` returns for NORETAIN VOs
+  `VO_CAP_OSD_ONLY_REDRAW` is `1<<7`, `VO_CAP_DECODER_ROTATE` `1<<8`. `do_redraw()` returns for NORETAIN VOs
   under the lock after clearing `request_redraw` (`8798cec7fa`,
   `903c805a37`); the opt-out sits in that check. master rewrote the redraw
   path again, so expect a conflict there on 0.42.
@@ -170,8 +183,12 @@ upstream code since 0.38–0.40.
   FFmpeg keeps two filters, overlay and equalizer): with `vo=null` (an
   embedder's placeholder before it has a video output) a rotated frame logs
   "filter 'rotate' not found or failed to allocate" (fatal) and passes on
-  unrotated; MediaCodec surface frames cannot be rotated in software at all.
-  The render API's software backend draws unrotated since `7a94ec5719`.
+  unrotated. MediaCodec surface frames cannot be rotated in software at all:
+  the MediaCodec VOs have MediaCodec rotate them (`VO_CAP_DECODER_ROTATE`;
+  vd_lavc reads `--video-rotate` from `struct dec_wrapper_opts`, which moved
+  to `f_decoder_wrapper.h` for it; check that fix_image_params() still
+  computes the frames' rotation the same way). The render API's software
+  backend draws unrotated since `7a94ec5719`.
 - `mpv-version` is stamped by the build as `v0.41.0-plynic-g<9 hex digits of
   the commit>`, identically on Android and Darwin, instead of `git describe`.
 - `--sub-keepout` lives in `mp_osd_render_sub_opts` (change flag
@@ -192,7 +209,8 @@ upstream code since 0.38–0.40.
   frameworks nobody links (AVFoundation, CoreVideo, OpenGLES, IOSurface,
   objc); plynic-libmpv-darwin links them and turns `b_lundef` on.
 - Upstreaming (timer, the ao_audiotrack series, OSD-only redraw, the
-  audiounit option, the objc meson fix): mpv's
+  audiounit option, the objc meson fix; the MediaCodec rotation once FFmpeg
+  has the decoder option): mpv's
   `DOCS/contribute.md` (`e76a35ec95`, master) does not accept commit messages
   or PR descriptions written by an AI; they have to be rewritten by hand
   first.
