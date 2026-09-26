@@ -56,8 +56,10 @@ Left out: `1388a45395` (ad_spdif muxer recreation; with passthrough),
 
 ## plynic patches
 
-Four topics, about 1.15k lines of code (the budget is five topics, ~1.5k
-lines; see plynic's `docs/engine-strategy/README.md` §1):
+Five topics, about 1.2k lines of code (the budget is five topics, ~1.5k
+lines; see plynic's `docs/engine-strategy/README.md` §1). The fifth, the
+decoder fallback, takes the budget's last topic; it fixes an upstream bug
+that is still on master, and upstreaming it gives the topic back:
 
 1. **JavaVM hook** — `client: add mpv_lavc_set_java_vm() for Android embedders`
    (media_kit hands the JavaVM to libavcodec through it).
@@ -143,6 +145,20 @@ lines; see plynic's `docs/engine-strategy/README.md` §1):
    without Swift would call into nothing. With Swift on, no guard commit is
    needed.
 
+5. **Decoder fallback**
+   - `vd_lavc: don't loop forever when every decoder fails` — when a
+     hardware decoder could not be opened, vd_lavc fell back until some
+     decoder opened, and when software decoding could not be opened either
+     (HEVC whose hvcC libavcodec rejects) it tried software decoding again,
+     forever: on the core thread, under the core lock, flooding "Could not
+     open codec." while every client call waited, and the decoder wrapper
+     never logged "Failed to initialize a decoder for codec". Software
+     decoding now gets one attempt; the video track is dropped (or, in the
+     middle of a stream, the stream ends) and audio plays on. The same
+     loop was in `receive_frame()` (a hwdec that fails while decoding);
+     `force_fallback()` no longer reads `attempted_hwdecs[-1]`. Upstream
+     mpv (master, 2026-09) has the same loops.
+
 Each commit message says what changed against its `plynic/78d43740f5`
 original. Dropped in the move: the backports of `46fe3cded0` (audiotrack JNI
 multi-instance), `93a924a553` and `4d03efb4b0` (set_pause for pull AOs) —
@@ -208,9 +224,15 @@ upstream code since 0.38–0.40.
   iOS). With `b_lundef=false` (mpv's default) nothing complains about
   frameworks nobody links (AVFoundation, CoreVideo, OpenGLES, IOSurface,
   objc); plynic-libmpv-darwin links them and turns `b_lundef` on.
+- vd_lavc's fallback: `force_fallback()` returns whether the method it
+  tried was a hwdec, and `fallback_until_open()` stops after software
+  decoding; if upstream reworks hwdec selection, check that a stream no
+  decoder can open still ends in "Failed to initialize a decoder"
+  (plynic-libmpv-darwin `tools/fallback`, plynic-libmpv-android
+  `tools/fallback-check`).
 - Upstreaming (timer, the ao_audiotrack series, OSD-only redraw, the
-  audiounit option, the objc meson fix; the MediaCodec rotation once FFmpeg
-  has the decoder option): mpv's
+  audiounit option, the objc meson fix, the decoder fallback; the MediaCodec
+  rotation once FFmpeg has the decoder option): mpv's
   `DOCS/contribute.md` (`e76a35ec95`, master) does not accept commit messages
   or PR descriptions written by an AI; they have to be rewritten by hand
   first.
