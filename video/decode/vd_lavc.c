@@ -670,16 +670,36 @@ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
     return M_OPT_EXIT;
 }
 
-static void force_fallback(struct mp_filter *vd)
+// Replace the decoder with the next decoding method: the next hwdec, or
+// software decoding once they are all attempted. Returns whether that was a
+// hwdec, i.e. whether there is still something else to try if it failed too.
+static bool force_fallback(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
     uninit_avctx(vd);
     int lev = ctx->hwdec_notified ? MSGL_WARN : MSGL_V;
+    bstr failed = ctx->num_attempted_hwdecs ?
+        ctx->attempted_hwdecs[ctx->num_attempted_hwdecs - 1] : bstr0("decoder");
     mp_msg(vd->log, lev, "Attempting next decoding method after failure of %.*s.\n",
-           BSTR_P(ctx->attempted_hwdecs[ctx->num_attempted_hwdecs - 1]));
+           BSTR_P(failed));
     select_and_set_hwdec(vd);
+    bool hwdec = ctx->use_hwdec;
     init_avctx(vd);
+    return hwdec;
+}
+
+// After the decoding method in use failed, try the next ones until one opens.
+// Software decoding comes last and gets one attempt: if it cannot open either
+// (a stream libavcodec cannot decode at all), ctx->avctx stays NULL.
+static void fallback_until_open(struct mp_filter *vd)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+
+    bool hwdec;
+    do {
+        hwdec = force_fallback(vd);
+    } while (!ctx->avctx && hwdec);
 }
 
 static void reinit(struct mp_filter *vd)
@@ -702,11 +722,8 @@ static void reinit(struct mp_filter *vd)
 
     bool use_hwdec = ctx->use_hwdec;
     init_avctx(vd);
-    if (!ctx->avctx && use_hwdec) {
-        do {
-            force_fallback(vd);
-        } while (!ctx->avctx);
-    }
+    if (!ctx->avctx && use_hwdec)
+        fallback_until_open(vd);
 
     // Wait for the first keyframe after reinit to ensure the decoder state is
     // valid and to avoid decoding errors that could cause hwdec to fail and
@@ -1349,18 +1366,21 @@ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
         ctx->num_sent_packets = 0;
 
         /*
-         * We repeatedly force_fallback until we get an avctx, because there are
-         * certain hwdecs that are really full decoders, and so if these fail,
-         * they also fail to give us a valid avctx, and the early return path
-         * here will simply give up on decoding completely if there is no
-         * decoder. We should never hit an infinite loop as the hwdec list is
-         * finite and we will eventually exhaust it and fall back to software
-         * decoding (and in practice, most hwdecs are hwaccels and so the
-         * decoder will successfully init even if the hwaccel fails later.)
+         * We fall back until we get an avctx, because there are certain
+         * hwdecs that are really full decoders, and so if these fail, they
+         * also fail to give us a valid avctx. The hwdec list is finite and
+         * software decoding comes last, tried once: when it cannot be opened
+         * either, there is no decoder left, and the stream ends here.
          */
-        do {
-            force_fallback(vd);
-        } while (!ctx->avctx);
+        fallback_until_open(vd);
+
+        if (!ctx->avctx) {
+            MP_ERR(vd, "No decoding method left for this stream.\n");
+            for (int n = 0; n < num_pkts; n++)
+                talloc_free(pkts[n]);
+            talloc_free(pkts);
+            return AVERROR_EOF;
+        }
 
         ctx->requeue_packets = pkts;
         ctx->num_requeue_packets = num_pkts;
